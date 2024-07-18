@@ -148,7 +148,8 @@ enum BfEmbeddedStatementFlags : int8
 	BfEmbeddedStatementFlags_None = 0,
 	BfEmbeddedStatementFlags_IsConditional = 1,
 	BfEmbeddedStatementFlags_IsDeferredBlock = 2,
-	BfEmbeddedStatementFlags_Unscoped = 4
+	BfEmbeddedStatementFlags_Unscoped = 4,
+	BfEmbeddedStatementFlags_CheckStack = 8
 };
 
 enum BfLocalVarAssignKind : int8
@@ -156,6 +157,12 @@ enum BfLocalVarAssignKind : int8
 	BfLocalVarAssignKind_None = 0,
 	BfLocalVarAssignKind_Conditional = 1,
 	BfLocalVarAssignKind_Unconditional = 2
+};
+
+struct BfCreateTypeDataContext
+{
+	Dictionary<int, int> mUsedStringIdMap;
+	HashSet<BfTypeInstance*> mReflectTypeSet;
 };
 
 class BfLocalVariable
@@ -1653,7 +1660,8 @@ public:
 	BfIRValue GetStringObjectValue(int idx, bool define, bool force);
 	BfIRValue GetStringObjectValue(const StringImpl& str, bool define = false, bool force = false);
 	BfIRValue CreateGlobalConstValue(const StringImpl& name, BfIRValue constant, BfIRType type, bool external);
-	void VariantToString(StringImpl& str, const BfVariant& variant);
+	void DataToString(StringImpl& str, void* ptr, BfType* type);
+	void VariantToString(StringImpl& str, const BfVariant& variant, BfType* type = NULL);
 	StringT<128> TypeToString(BfType* resolvedType, Array<String>* genericMethodParamNameOverrides = NULL);
 	StringT<128> TypeToString(BfType* resolvedType, BfTypeNameFlags typeNameFlags, Array<String>* genericMethodParamNameOverrides = NULL);
 	void DoTypeToString(StringImpl& str, BfType* resolvedType, BfTypeNameFlags typeNameFlags = BfTypeNameFlags_None, Array<String>* genericMethodParamNameOverrides = NULL);
@@ -1739,6 +1747,7 @@ public:
 	bool HasExecutedOutput();
 	void SkipObjectAccessCheck(BfTypedValue typedVal);
 	void EmitObjectAccessCheck(BfTypedValue typedVal);
+	bool WantsDebugHelpers();
 	void EmitEnsureInstructionAt();
 	void EmitDynamicCastCheck(const BfTypedValue& targetValue, BfType* targetType, BfIRBlock trueBlock, BfIRBlock falseBlock, bool nullSucceeds = false);
 	void EmitDynamicCastCheck(BfTypedValue typedVal, BfType* type, bool allowNull);
@@ -1942,7 +1951,7 @@ public:
 	BfType* ResolveSelfType(BfType* type, BfType* selfType);
 	bool IsUnboundGeneric(BfType* type);
 	BfGenericParamInstance* GetGenericTypeParamInstance(int paramIdx);
-	BfGenericParamInstance* GetGenericParamInstance(BfGenericParamType* type, bool checkMixinBind = false);
+	BfGenericParamInstance* GetGenericParamInstance(BfGenericParamType* type, bool checkMixinBind = false, BfFailHandleKind failHandleKind = BfFailHandleKind_Normal);
 	void GetActiveTypeGenericParamInstances(SizedArray<BfGenericParamInstance*, 4>& genericParamInstance);
 	BfGenericParamInstance* GetMergedGenericParamData(BfGenericParamType* type, BfGenericParamFlags& outFlags, BfType*& outTypeConstraint);
 	BfTypeInstance* GetBaseType(BfTypeInstance* typeInst);
@@ -1965,7 +1974,7 @@ public:
 	bool ValidateTypeWildcard(BfAstNode* typeRef, bool isAttributeRef);
 	void GetDelegateTypeRefAttributes(BfDelegateTypeRef* delegateTypeRef, BfCallingConvention& callingConvention);
 	BfType* ResolveTypeRef(BfTypeReference* typeRef, BfPopulateType populateType = BfPopulateType_Data, BfResolveTypeRefFlags resolveFlags = (BfResolveTypeRefFlags)0, int numGenericArgs = 0);
-	BfType* ResolveTypeRefAllowUnboundGenerics(BfTypeReference* typeRef, BfPopulateType populateType = BfPopulateType_Data, bool resolveGenericParam = true);
+	BfType* ResolveTypeRefAllowUnboundGenerics(BfTypeReference* typeRef, BfPopulateType populateType = BfPopulateType_Data, BfResolveTypeRefFlags resolveFlags = (BfResolveTypeRefFlags)0, bool resolveGenericParam = true);
 	BfType* ResolveTypeRef_Type(BfAstNode* astNode, const BfSizedArray<BfAstNode*>* genericArgs, BfPopulateType populateType = BfPopulateType_Data, BfResolveTypeRefFlags resolveFlags = (BfResolveTypeRefFlags)0);
 	BfType* ResolveTypeRef(BfAstNode* astNode, const BfSizedArray<BfAstNode*>* genericArgs, BfPopulateType populateType = BfPopulateType_Data, BfResolveTypeRefFlags resolveFlags = (BfResolveTypeRefFlags)0);
 	BfType* ResolveTypeDef(BfTypeDef* typeDef, BfPopulateType populateType = BfPopulateType_Data, BfResolveTypeRefFlags resolveFlags = BfResolveTypeRefFlag_None);
@@ -2061,7 +2070,7 @@ public:
 	void SetMethodDependency(BfMethodInstance* methodInstance);
 	BfModuleMethodInstance ReferenceExternalMethodInstance(BfMethodInstance* methodInstance, BfGetMethodInstanceFlags flags = BfGetMethodInstanceFlag_None);
 	BfModule* GetOrCreateMethodModule(BfMethodInstance* methodInstance);
-	BfModuleMethodInstance GetMethodInstance(BfTypeInstance* typeInst, BfMethodDef* methodDef, const BfTypeVector& methodGenericArguments, BfGetMethodInstanceFlags flags = BfGetMethodInstanceFlag_None, BfTypeInstance* foreignType = NULL);
+	BfModuleMethodInstance GetMethodInstance(BfTypeInstance* typeInst, BfMethodDef* methodDef, const BfTypeVector& methodGenericArguments, BfGetMethodInstanceFlags flags = BfGetMethodInstanceFlag_None, BfTypeInstance* foreignType = NULL, BfModule* referencingModule = NULL);
 	BfModuleMethodInstance GetMethodInstance(BfMethodInstance* methodInstance, BfGetMethodInstanceFlags flags = BfGetMethodInstanceFlag_None);
 	BfMethodInstance* GetOuterMethodInstance(BfMethodInstance* methodInstance); // Only useful for local methods
 	void SetupMethodIdHash(BfMethodInstance* methodInstance);
@@ -2074,7 +2083,8 @@ public:
 	BfIRValue CreateTypeDataRef(BfType* type);
 	void EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType, BfIRValue arg, SizedArrayImpl<uint8>& data, Dictionary<int, int>& usedStringIdMap);
 	BfIRValue CreateFieldData(BfFieldInstance* fieldInstance, int customAttrIdx);
-	BfIRValue CreateTypeData(BfType* type, Dictionary<int, int>& usedStringIdMap, bool forceReflectFields, bool needsTypeData, bool needsTypeNames, bool needsVData);
+	void CreateSlotOfs(BfTypeInstance* typeInstance);
+	BfIRValue CreateTypeData(BfType* type, BfCreateTypeDataContext& ctx, bool forceReflectFields, bool needsTypeData, bool needsTypeNames, bool needsVData);
 	BfIRValue FixClassVData(BfIRValue value);
 
 public:

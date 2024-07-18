@@ -166,9 +166,15 @@ namespace System.Net
 		public const int SOCK_DGRAM = 2;
 		public const int IPPROTO_TCP = 6;
 		public const int IPPROTO_UDP = 17;
+#if BF_PLATFORM_WINDOWS
 		public const int SOL_SOCKET = 0xffff;
 		public const int SO_REUSEADDR = 0x0004;
-		public const int SO_BROADCAST = 0x0020;
+ 		public const int SO_BROADCAST = 0x0020;
+#else
+		public const int SOL_SOCKET = 1;
+		public const int SO_REUSEADDR = 2;
+		public const int SO_BROADCAST = 6;
+#endif
 		public const IPv4Address INADDR_ANY = default;
 
 #if BF_PLATFORM_WINDOWS
@@ -397,8 +403,9 @@ namespace System.Net
 			return .Ok;
 		}
 
-		public Result<void> Connect(StringView addr, int32 port)
+		public Result<void> Connect(StringView addr, int32 port, out SockAddr_in sockAddr)
 		{
+			sockAddr = default;
 			mHandle = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
 			if (mHandle == INVALID_SOCKET)
 				return .Err;
@@ -407,7 +414,6 @@ namespace System.Net
 			if (hostEnt == null)
 				return .Err;
 
-			SockAddr_in sockAddr;
 			sockAddr.sin_family = AF_INET;
 			Internal.MemCpy(&sockAddr.sin_addr, hostEnt.h_addr_list[0], sizeof(IPv4Address));
 			sockAddr.sin_port = (uint16)htons((int16)port);
@@ -428,9 +434,11 @@ namespace System.Net
 			return .Ok;
 		}
 
-		public Result<void> AcceptFrom(Socket listenSocket)
+		public Result<void> Connect(StringView addr, int32 port) => Connect(addr, port, ?);
+
+		public Result<void> AcceptFrom(Socket listenSocket, out SockAddr_in clientAddr)
 		{
-			SockAddr_in clientAddr;
+			clientAddr = default;
 			int32 clientAddrLen = sizeof(SockAddr_in);
 			mHandle = accept(listenSocket.mHandle, &clientAddr, &clientAddrLen);
 			if (mHandle == INVALID_SOCKET)
@@ -444,6 +452,8 @@ namespace System.Net
 			mIsConnected = true;
 			return .Ok;
 		}
+
+		public Result<void> AcceptFrom(Socket listenSocket) => AcceptFrom(listenSocket, ?);
 
 		public static int32 Select(FDSet* readFDS, FDSet* writeFDS, FDSet* exceptFDS, int waitTimeMS)
 		{

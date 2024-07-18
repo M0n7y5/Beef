@@ -9,10 +9,16 @@ namespace System.Diagnostics
 		{
 			if (!condition)
 			{
-				if (Runtime.CheckErrorHandlers(scope Runtime.AssertError(.Debug, error, filePath, line)) == .Ignore)
+				if ((Runtime.CheckAssertError != null) && (Runtime.CheckAssertError(.Debug, error, filePath, line) == .Ignore))
 					return;
-				String failStr = scope .()..AppendF("Assert failed: {} at line {} in {}", error, line, filePath);
+#if !BF_RUNTIME_REDUCED
+				String failStr = scope .()..Append("Assert failed: ", error, " at line ");
+				line.ToString(failStr);
+				failStr.Append(" in ", filePath);
 				Internal.FatalError(failStr, 1);
+#else
+				Internal.FatalError("Assert failed", 1);
+#endif
 			}
 		}
 
@@ -21,7 +27,9 @@ namespace System.Diagnostics
 #endif
 		public static void FatalError(String msg = "Fatal error encountered", String filePath = Compiler.CallerFilePath, int line = Compiler.CallerLineNum)
 		{
-			String failStr = scope .()..AppendF("{} at line {} in {}", msg, line, filePath);
+			String failStr = scope .()..Append(msg, " at line ");
+			line.ToString(failStr);
+			failStr.Append(" in ", filePath);
 			Internal.FatalError(failStr, 1);
 		}
 
@@ -51,7 +59,7 @@ namespace System.Diagnostics
 			Write(sv.[Friend]mPtr, sv.[Friend]mLength);
 		}
 
-		public static void Write(String fmt, params Object[] args)
+		public static void Write(String fmt, params Span<Object> args)
 		{
 			String str = scope String(4096);
 			str.AppendF(fmt, params args);
@@ -87,7 +95,7 @@ namespace System.Diagnostics
 		}
 
 		static bool gIsDebuggerPresent = IsDebuggerPresent;
-		[LinkName("IsDebuggerPresent"), CallingConvention(.Stdcall)]
+		[LinkName("IsDebuggerPresent"), CallingConvention(.Stdcall), Import("kernel32.lib")]
 		static extern int32 Internal_IsDebuggerPresent();
 
 		public static bool IsDebuggerPresent

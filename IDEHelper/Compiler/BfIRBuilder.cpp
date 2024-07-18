@@ -29,6 +29,7 @@
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/IR/InlineAsm.h"
 #include "llvm/Support/FileSystem.h"
+#include "llvm/IR/DIBuilder.h"
 
 #pragma warning(pop)
 
@@ -466,6 +467,11 @@ void BfIRConstHolder::pv(const BfIRValue& irValue)
 
 void BfIRConstHolder::FixTypeCode(BfTypeCode& typeCode)
 {
+	if (typeCode == BfTypeCode_IntUnknown)
+		typeCode = BfTypeCode_Int64;
+	if (typeCode == BfTypeCode_UIntUnknown)
+		typeCode = BfTypeCode_UInt64;
+
 	if (typeCode == BfTypeCode_IntPtr)
 	{
 		if (mModule->mSystem->mPtrSize == 4)
@@ -740,11 +746,6 @@ BfIRType BfIRConstHolder::GetSizedArrayType(BfIRType elementType, int length)
 
 BfIRValue BfIRConstHolder::CreateConst(BfTypeCode typeCode, uint64 val)
 {
-	if (typeCode == BfTypeCode_IntUnknown)
-		typeCode = BfTypeCode_Int64;
-	else if (typeCode == BfTypeCode_UIntUnknown)
-		typeCode = BfTypeCode_UInt64;
-
 	FixTypeCode(typeCode);
 	BfConstant* constant = mTempAlloc.Alloc<BfConstant>();
 	constant->mTypeCode = typeCode;
@@ -963,7 +964,17 @@ BfIRValue BfIRConstHolder::CreateConst(BfConstant* fromConst, BfIRConstHolder* f
 		ptrToInt->mToType = fromPtrToInt->mToType;
 		copiedConst = (BfConstant*)ptrToInt;
 	}
-
+	else if (fromConst->mConstType == BfConstType_Box)
+	{
+		auto fromBox = (BfConstantBox*)fromConst;
+		auto fromTarget = fromHolder->GetConstantById(fromBox->mTarget);
+		auto copiedTarget = CreateConst(fromTarget, fromHolder);
+		auto box = mTempAlloc.Alloc<BfConstantBox>();
+		box->mConstType = BfConstType_Box;
+		box->mTarget = copiedTarget.mId;
+		box->mToType = fromBox->mToType;
+		copiedConst = (BfConstant*)box;
+	}
 	else
 	{
 		BF_FATAL("not handled");
@@ -1884,11 +1895,11 @@ String BfIRBuilder::ToString(BfIRType irType)
 		{
 			auto& typeEntry = mBfIRCodeGen->GetTypeEntry(irType.mId);
 			if (irType.mKind == BfIRType::TypeKind::TypeKind_TypeId)
-				llvmType = typeEntry.mLLVMType;
+				llvmType = typeEntry.mType->mLLVMType;
 			else if (irType.mKind == BfIRType::TypeKind::TypeKind_TypeInstId)
-				llvmType = typeEntry.mInstLLVMType;
+				llvmType = typeEntry.mInstType->mLLVMType;
 			else if (irType.mKind == BfIRType::TypeKind::TypeKind_TypeInstPtrId)
-				llvmType = typeEntry.mInstLLVMType->getPointerTo();
+				llvmType = typeEntry.mInstType->mLLVMType->getPointerTo();
 		}
 
 		if (llvmType == NULL)
@@ -1900,7 +1911,7 @@ String BfIRBuilder::ToString(BfIRType irType)
 		if (auto pointerType = llvm::dyn_cast<llvm::PointerType>(llvmType))
 		{
 			strStream << "\n ElementType: ";
-			pointerType->getElementType()->print(strStream);
+			//pointerType->getElementType()->print(strStream);
 		}
 		strStream.flush();
 		return outStr;
@@ -3098,6 +3109,12 @@ void BfIRBuilder::CreateTypeDeclaration(BfType* type, bool forceDbgDefine)
 		}
 		return;
 	}
+	else
+	{
+		irType = GetPrimitiveType(BfTypeCode_None);
+		if (wantDIData)
+			diType = DbgCreateBasicType("void", 0, 0, llvm::dwarf::DW_ATE_address);
+	}
 
 	if (irType)
 		SetType(type, irType);
@@ -3951,9 +3968,9 @@ void BfIRBuilder::CreateTypeDefinition(BfType* type, bool forceDbgDefine)
 			{
 				if (isDefiningModule)
 				{
-					fieldInstance->mIsThreadLocal = mModule->IsThreadLocal(fieldInstance);
+					bool isThreadLocal = mModule->IsThreadLocal(fieldInstance);
 					if (!resolvedFieldType->IsVoid())
-						mModule->CreateStaticField(fieldInstance, fieldInstance->mIsThreadLocal);
+						mModule->CreateStaticField(fieldInstance, isThreadLocal);
 				}
 			}
 		}

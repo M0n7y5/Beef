@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.0.0 FATAL_ERROR)
+cmake_minimum_required(VERSION 3.5)
 
 ################### Variables. ####################
 # Change if you want modify path or other values. #
@@ -121,7 +121,7 @@ file(GLOB SRC_FILES
     CachedDataStream.cpp
     Common.cpp
     DataStream.cpp
-    FileStream.cpp    
+    FileStream.cpp
     MemStream.cpp
     ResLib.cpp
     Startup.cpp
@@ -329,7 +329,7 @@ if (DEFINED BF_ENABLE_SDL)
 endif()
 
 # Add library to build.
-add_library(${PROJECT_NAME} SHARED
+add_library(${PROJECT_NAME} STATIC
    ${SRC_FILES}
    ${SRC_FILES_OS}
 )

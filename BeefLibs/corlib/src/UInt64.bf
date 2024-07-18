@@ -3,7 +3,7 @@ using System.Globalization;
 namespace System
 {
 #unwarn
-	struct UInt64 : uint64, IInteger, IUnsigned, IHashable, IIsNaN, IFormattable
+	struct UInt64 : uint64, IInteger, IUnsigned, IHashable, IIsNaN, IFormattable, IParseable<uint64, ParseError>, IParseable<uint64>, IMinMaxValue<uint64>
 	{
 		public enum ParseError
 		{
@@ -15,6 +15,9 @@ namespace System
 
 		public const uint64 MaxValue = 0xFFFFFFFFFFFFFFFFUL;
 		public const uint64 MinValue = 0;
+
+		public static uint64 IMinMaxValue<uint64>.MinValue => MinValue;
+		public static uint64 IMinMaxValue<uint64>.MaxValue => MaxValue;
 
 		public static int operator<=>(UInt64 a, UInt64 b)
 		{
@@ -55,8 +58,6 @@ namespace System
 			}
 		}
 
-		static String sHexUpperChars = "0123456789ABCDEF";
-		static String sHexLowerChars = "0123456789abcdef";
 		public void ToString(String outString, String format, IFormatProvider formatProvider)
 		{
 			if(format == null || format.IsEmpty)
@@ -94,6 +95,7 @@ namespace System
 			if (val.IsEmpty)
 				return .Err(.NoValue);
 
+			bool digitsFound = false;
 			uint64 result = 0;
 			uint64 prevResult = 0;
 
@@ -107,6 +109,7 @@ namespace System
 				{
 					result &*= radix;
 					result &+= (uint64)(c - '0');
+					digitsFound = true;
 				}
 				else if ((c >= 'a') && (c <= 'f'))
 				{
@@ -114,6 +117,7 @@ namespace System
 						return .Err(.InvalidChar(result));
 					result &*= radix;
 					result &+= (uint64)(c - 'a' + 10);
+					digitsFound = true;
 				}
 				else if ((c >= 'A') && (c <= 'F'))
 				{
@@ -121,12 +125,14 @@ namespace System
 						return .Err(.InvalidChar(result));
 					result &*= radix;
 					result &+= (uint64)(c - 'A' + 10);
+					digitsFound = true;
 				}
 				else if ((c == 'X') || (c == 'x'))
 				{
 					if ((!style.HasFlag(.AllowHexSpecifier)) || (i == 0) || (result != 0))
 						return .Err(.InvalidChar(result));
 					radix = 0x10;
+					digitsFound = false;
 				}
 				else if (c == '\'')
 				{
@@ -144,7 +150,24 @@ namespace System
 				prevResult = result;
 			}
 
+			if (!digitsFound)
+				return .Err(.NoValue);
+
 			return result;
+		}
+
+		public static Result<uint64, ParseError> IParseable<uint64, ParseError>.Parse(StringView val)
+		{
+			return Parse(val);
+		}
+
+		public static Result<uint64> IParseable<uint64>.Parse(StringView val)
+		{
+			var res = Parse(val);
+			if(res case .Err)
+				return .Err;
+			else
+				return .Ok(res.Value);
 		}
 	}
 }

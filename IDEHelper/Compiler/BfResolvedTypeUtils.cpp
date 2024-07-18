@@ -830,6 +830,8 @@ BfMethodFlags BfMethodInstance::GetMethodFlags()
 		methodFlags = (BfMethodFlags)(methodFlags | BfMethodFlags_Constructor);
 	if (mMethodDef->mIsReadOnly)
 		methodFlags = (BfMethodFlags)(methodFlags | BfMethodFlags_ReadOnly);
+	if (mMethodDef->mMethodType == BfMethodType_Mixin)
+		methodFlags = (BfMethodFlags)(methodFlags | BfMethodFlags_Mixin);
 
 	auto callingConvention = GetOwner()->mModule->GetIRCallingConvention(this);
 	if (callingConvention == BfIRCallingConv_ThisCall)
@@ -839,6 +841,14 @@ BfMethodFlags BfMethodInstance::GetMethodFlags()
 	else if (callingConvention == BfIRCallingConv_FastCall)
 		methodFlags = (BfMethodFlags)(methodFlags | BfMethodFlags_FastCall);
 
+	return methodFlags;
+}
+
+BfComptimeMethodFlags BfMethodInstance::GetComptimeMethodFlags()
+{
+	BfComptimeMethodFlags methodFlags = (BfComptimeMethodFlags)0;
+	if (!mMethodDef->CanReflect())
+		methodFlags = (BfComptimeMethodFlags)(methodFlags | BfComptimeMethodFlags_NoReflect);
 	return methodFlags;
 }
 
@@ -1097,7 +1107,7 @@ BfType* BfMethodInstance::GetThisType()
 		auto thisType = mParams[0].mResolvedType;
 		auto owner = GetOwner();
 		if ((thisType->IsValueType()) && ((mMethodDef->mIsMutating) || (!AllowsSplatting(-1))) && (!thisType->GetLoweredType(BfTypeUsage_Parameter)))
-			return owner->mModule->CreatePointerType(thisType);
+			return owner->mModule->mContext->mUnreifiedModule->CreatePointerType(thisType);
 		return thisType;
 	}
 	return GetParamType(-1);
@@ -1262,11 +1272,12 @@ bool BfMethodInstance::WasGenericParam(int paramIdx)
 
 bool BfMethodInstance::IsParamSkipped(int paramIdx)
 {
+	auto resolveModule = GetModule()->mContext->mUnreifiedModule;
 	if (paramIdx == -1)
 		return false;
 	BfType* paramType = GetParamType(paramIdx);
 	if ((paramType->CanBeValuelessType()) && (paramType->IsDataIncomplete()))
-		GetModule()->PopulateType(paramType, BfPopulateType_Data);
+		resolveModule->PopulateType(paramType, BfPopulateType_Data);
 	if ((paramType->IsValuelessType()) && (!paramType->IsMethodRef()))
 		return true;
 	return false;
@@ -1336,7 +1347,7 @@ int BfMethodInstance::DbgGetVirtualMethodNum()
 		module->HadSlotCountDependency();
 
 		int vDataIdx = -1;
-		vDataIdx = 1 + module->mCompiler->mMaxInterfaceSlots;
+		vDataIdx = module->mCompiler->GetVDataPrefixDataCount() + module->mCompiler->mMaxInterfaceSlots;
 		vDataIdx += module->mCompiler->GetDynCastVDataCount();
 		if ((module->mCompiler->mOptions.mHasVDataExtender) && (module->mCompiler->IsHotCompile()))
 		{
@@ -1367,7 +1378,9 @@ int BfMethodInstance::DbgGetVirtualMethodNum()
 
 void BfMethodInstance::GetIRFunctionInfo(BfModule* module, BfIRType& returnType, SizedArrayImpl<BfIRType>& paramTypes, bool forceStatic)
 {
-	module->PopulateType(mReturnType);
+	BfModule* resolveModule = module->mContext->mUnreifiedModule;
+
+	resolveModule->PopulateType(mReturnType);
 
 	BfTypeCode loweredReturnTypeCode = BfTypeCode_None;
 	BfTypeCode loweredReturnTypeCode2 = BfTypeCode_None;
@@ -1451,7 +1464,7 @@ void BfMethodInstance::GetIRFunctionInfo(BfModule* module, BfIRType& returnType,
 		else
 		{
 			if ((checkType->IsComposite()) && (checkType->IsIncomplete()))
-				module->PopulateType(checkType, BfPopulateType_Data);
+				resolveModule->PopulateType(checkType, BfPopulateType_Data);
 
 			if (checkType->IsMethodRef())
 			{
@@ -1484,7 +1497,7 @@ void BfMethodInstance::GetIRFunctionInfo(BfModule* module, BfIRType& returnType,
 		}
 
 		if (checkType->CanBeValuelessType())
-			module->PopulateType(checkType, BfPopulateType_Data);
+			resolveModule->PopulateType(checkType, BfPopulateType_Data);
 		if ((checkType->IsValuelessType()) && (!checkType->IsMethodRef()))
 			continue;
 
@@ -1955,8 +1968,10 @@ BfType* BfTypeInstance::GetUnionInnerType(bool* wantSplat)
 	// Don't allow a float for the inner type -- to avoid invalid loading invalid FP bit patterns during copies
 	if ((unionInnerType != NULL) && (!makeRaw))
 	{
-		if (wantSplat != NULL)
-			*wantSplat = true;
+		//TODO: How did splats make sense? It breaks CompactList
+
+		//if (wantSplat != NULL)
+		//	*wantSplat = true;
 	}
 	else
 	{
@@ -3092,6 +3107,12 @@ BfVariant BfResolvedTypeSet::EvaluateToVariant(LookupContext* ctx, BfExpression*
 {
 	outType = NULL;
 
+	BfMethodState methodState;
+	methodState.mTempKind = BfMethodState::TempKind_Static;
+	SetAndRestoreValue<BfMethodState*> prevMethodState;
+	if (ctx->mModule->mCurMethodState == NULL)
+		prevMethodState.Init(ctx->mModule->mCurMethodState, &methodState);
+
 	BfConstResolver constResolver(ctx->mModule);
 	BfVariant variant;
 	constResolver.mBfEvalExprFlags = BfEvalExprFlags_NoCast;
@@ -3295,7 +3316,8 @@ int BfResolvedTypeSet::DoHash(BfType* type, LookupContext* ctx, bool allowRef, i
 	else if (type->IsConstExprValue())
 	{
 		BfConstExprValueType* constExprValueType = (BfConstExprValueType*)type;
-		int hashVal = ((int)constExprValueType->mValue.mTypeCode << 17) ^ (constExprValueType->mValue.mInt32 << 3) ^ HASH_CONSTTYPE;
+		int32 dataHash = BeefHash<BfVariant>()(constExprValueType->mValue);
+		int hashVal = ((int)constExprValueType->mValue.mTypeCode << 17) ^ (dataHash << 3) ^ HASH_CONSTTYPE;
 		hashVal = ((hashVal ^ (Hash(constExprValueType->mType, ctx, BfHashFlag_AllowRef, hashSeed))) << 5) - hashVal;
 		return hashVal;
 	}
@@ -3872,7 +3894,7 @@ int BfResolvedTypeSet::DoHash(BfTypeReference* typeRef, LookupContext* ctx, BfHa
 			}
 			if (type->IsRef())
 				type = type->GetUnderlyingType();
-			return Hash(type, ctx, flags, hashSeed);
+			return DoHash(type, ctx, flags, hashSeed);
 		}
 
 		int elemHash = Hash(retTypeTypeRef->mElementType, ctx, BfHashFlag_None, hashSeed) ^ HASH_MODTYPE + retTypeTypeRef->mRetTypeToken->mToken;
@@ -4070,7 +4092,8 @@ int BfResolvedTypeSet::DoHash(BfTypeReference* typeRef, LookupContext* ctx, BfHa
 			return 0;
 		}
 
-		auto hashVal = ((int)result.mTypeCode << 17) ^ (result.mInt32 << 3) ^ HASH_CONSTTYPE;
+		int32 dataHash = BeefHash<BfVariant>()(result);
+		auto hashVal = ((int)result.mTypeCode << 17) ^ (dataHash << 3) ^ HASH_CONSTTYPE;
 		hashVal = ((hashVal ^ (Hash(resultType, ctx, BfHashFlag_AllowRef, hashSeed))) << 5) - hashVal;
 		return hashVal;
 	}
@@ -4323,7 +4346,7 @@ bool BfResolvedTypeSet::Equals(BfType* lhs, BfType* rhs, LookupContext* ctx)
 		BfConstExprValueType* rhsConstExprValueType = (BfConstExprValueType*)rhs;
 
 		return (lhsConstExprValueType->mType == rhsConstExprValueType->mType) &&
-			(lhsConstExprValueType->mValue.mInt64 == rhsConstExprValueType->mValue.mInt64);
+			(lhsConstExprValueType->mValue == rhsConstExprValueType->mValue);
 	}
 	else
 	{
@@ -5024,8 +5047,7 @@ bool BfResolvedTypeSet::Equals(BfType* lhs, BfTypeReference* rhs, LookupContext*
 				return false;
 		}
 
-		return (result.mTypeCode == lhsConstExprType->mValue.mTypeCode) &&
-			(result.mInt64 == lhsConstExprType->mValue.mInt64);
+		return result == lhsConstExprType->mValue;
 	}
 	else
 	{

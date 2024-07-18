@@ -509,7 +509,7 @@ addr_target COFF::GetSectionAddr(uint16 section, uint32 offset)
 		return hiBase + offset;
 	}
 
-	int rva = mSectionRVAs[section - 1];
+	int rva = mSectionHeaders[section - 1].mVirtualAddress;
 	if (rva == 0)
 		return ADDR_FLAG_ABS + offset;
 
@@ -3283,11 +3283,16 @@ void COFF::ParseCompileUnit_Symbols(DbgCompileUnit* compileUnit, uint8* sectionD
 			break;
 		case /*S_INLINEES*/0x1168:
 			break;
-		case 0x1176:
-			break;
-		case 0x1178:
-			break;
-		case 0x1179:
+		case 0x1176:			
+		case 0x1178:			
+		case 0x1179:			
+		case 0x117A:			
+		case 0x117B:
+		case 0x117C:
+		case 0x117D:
+		case 0x117E:
+		case 0x117F:
+		case 0x1180:
 			break;
 		case 7:
 			// Unknown
@@ -3683,6 +3688,10 @@ CvCompileUnit* COFF::ParseCompileUnit(CvModuleInfo* moduleInfo, CvCompileUnit* c
 					checksumFileRefs.TryAdd(dataOfs, (int)compileUnit->mSrcFileRefs.size() - 1);
 					PTR_ALIGN(data, sectionData, 4);
 				}
+			}
+			else if (lineInfoType == 255)
+			{
+				// Ignore
 			}
 			else
 			{
@@ -5178,6 +5187,7 @@ bool COFF::CvParseDBI(int wantAge)
 				contribEntry->mLength = curSize;
 				contribEntry->mDbgModule = this;
 				contribEntry->mCompileUnitId = contrib.mModule;
+				contribEntry->mSection = contrib.mSection;
 				mDebugTarget->mContribMap.Insert(contribEntry);
 			}
 		}
@@ -5288,7 +5298,7 @@ bool COFF::CvParseDBI(int wantAge)
 
 void COFF::ParseSectionHeader(int sectionIdx)
 {
-	bool fakeRVAS = mSectionRVAs.empty();
+	bool fakeRVAS = mSectionHeaders.empty();
 
 	int sectionSize = 0;
 	uint8* sectionData = CvReadStream(sectionIdx, &sectionSize);
@@ -5300,12 +5310,15 @@ void COFF::ParseSectionHeader(int sectionIdx)
 		auto& sectionHeader = GET(PESectionHeader);
 		if (fakeRVAS)
 		{
-			mSectionRVAs.push_back(sectionHeader.mVirtualAddress);
+			mSectionHeaders.push_back(sectionHeader);
 		}
 	}
 
 	if (fakeRVAS)
-		mSectionRVAs.push_back(0);
+	{
+		PESectionHeader sectionHeader = { 0 };
+		mSectionHeaders.push_back(sectionHeader);
+	}
 
 	delete sectionData;
 }
@@ -6020,7 +6033,7 @@ bool COFF::TryLoadPDB(const String& pdbPath, uint8 wantGuid[16], int32 wantAge)
 
 	BP_ZONE("COFF::TryLoadPDB");
 
-	if (!isVerifyOnly)
+	if (!isVerifyOnly && !(gDebugManager->GetOutputFilterFlags() & BfOutputFilterFlags_SymbolLoadMessages))
 		mDebugger->OutputMessage(StrFormat("Loading PDB %s\n", pdbPath.c_str()));
 
 	DWORD highFileSize = 0;

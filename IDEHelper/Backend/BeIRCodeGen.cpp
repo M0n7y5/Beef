@@ -2,6 +2,7 @@
 #include "../Compiler/BfIRCodeGen.h"
 #include "BeDbgModule.h"
 #include "BeefySysLib/util/BeefPerf.h"
+#include "llvm/IR/DIBuilder.h"
 
 #include "BeefySysLib/util/AllocDebug.h"
 #include "BeefySysLib/util/Hash.h"
@@ -403,6 +404,33 @@ BeIRTypeEntry& BeIRCodeGen::GetTypeEntry(int typeId)
 }
 
 void BeIRCodeGen::FixValues(BeStructType* structType, CmdParamVec<BeValue*>& values)
+{
+	if (values.size() >= structType->mMembers.size())
+		return;
+
+	int readIdx = values.size() - 1;
+	values.resize(structType->mMembers.size());
+	for (int i = (int)values.size() - 1; i >= 0; i--)
+	{
+		if (mBeContext->AreTypesEqual(values[readIdx]->GetType(), structType->mMembers[i].mType))
+		{
+			values[i] = values[readIdx];
+			readIdx--;
+		}
+		else if (structType->mMembers[i].mType->IsSizedArray())
+		{
+			auto beConst = mBeModule->mAlloc.Alloc<BeConstant>();
+			beConst->mType = structType->mMembers[i].mType;
+			values[i] = beConst;
+		}
+		else
+		{
+			FatalError("Malformed structure values");
+		}
+	}
+}
+
+void BeIRCodeGen::FixValues(BeStructType* structType, SizedArrayImpl<BeConstant*>& values)
 {
 	if (values.size() >= structType->mMembers.size())
 		return;
@@ -905,6 +933,10 @@ void BeIRCodeGen::Read(BeValue*& beValue)
 
 				constStruct->mMemberValues.Add(constant);
 			}
+
+			if (type->IsStruct())
+				FixValues((BeStructType*)type, constStruct->mMemberValues);
+
 			beValue = constStruct;
 
 			BE_MEM_END("ParamType_Const_Array");
@@ -1386,6 +1418,8 @@ void BeIRCodeGen::HandleNextCmd()
 		{
 			CMD_PARAM(BeValue*, lhs);
 			CMD_PARAM(BeValue*, rhs);
+			if (lhs->GetType() != rhs->GetType())
+				Fail("Type mismatch for CmpEQ");
 			SetResult(curId, mBeModule->CreateCmp(BeCmpKind_EQ, lhs, rhs));
 		}
 		break;
@@ -3446,6 +3480,8 @@ void BeIRCodeGen::HandleNextCmd()
 			CMD_PARAM(bool, alwaysPreserve);
 			CMD_PARAM(int, flags);
 
+			BF_ASSERT(type != NULL);
+
 			auto dbgFunc = (BeDbgFunction*)scope;
 
 			auto dbgVar = mBeModule->mOwnedValues.Alloc<BeDbgVariable>();
@@ -3495,6 +3531,8 @@ void BeIRCodeGen::HandleNextCmd()
 			CMD_PARAM(int, lineNo);
 			CMD_PARAM(BeMDNode*, type);
 			CMD_PARAM(int, initType);
+
+			BF_ASSERT(type != NULL);
 
 			auto dbgVar = mBeModule->mOwnedValues.Alloc<BeDbgVariable>();
 			dbgVar->mName = name;

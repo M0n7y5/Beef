@@ -1,7 +1,7 @@
 namespace System
 {
 #unwarn
-	struct UInt : uint, IInteger, IUnsigned, IHashable, IFormattable, IIsNaN
+	struct UInt : uint, IInteger, IUnsigned, IHashable, IFormattable, IIsNaN, IParseable<uint, ParseError>, IParseable<uint>, IMinMaxValue<uint>
 	{
 		public enum ParseError
 		{
@@ -11,8 +11,19 @@ namespace System
 			case InvalidChar(uint partialResult);
 		}
 
+		public struct Simple : uint
+		{
+			public override void ToString(String strBuffer)
+			{
+				((uint)this).ToString(strBuffer);
+			}
+		}
+
 		public const uint MaxValue = (sizeof(uint) == 8) ? 0xFFFFFFFFFFFFFFFFUL : 0xFFFFFFFFL;
 		public const uint MinValue = 0;
+
+		public static uint IMinMaxValue<uint>.MinValue => MinValue;
+		public static uint IMinMaxValue<uint>.MaxValue => MaxValue;
 
 	    public bool IsNull()
 	    {
@@ -86,6 +97,20 @@ namespace System
 				var result = UInt32.Parse(val);
 				return *(Result<uint, ParseError>*)&result;
 			}
+		}
+
+		public static Result<uint, ParseError> IParseable<uint, ParseError>.Parse(StringView val)
+		{
+			return Parse(val);
+		}
+
+		public static Result<uint> IParseable<uint>.Parse(StringView val)
+		{
+			var res = Parse(val);
+			if(res case .Err)
+				return .Err;
+			else
+				return .Ok(res.Value);
 		}
 	}
 }

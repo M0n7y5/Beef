@@ -22,5 +22,48 @@ namespace Tests
 			FloatParseTest("3.3e-11", 3.3e-11f);
 			FloatParseTest("0.002e5", 0.002e5f);
 		}
+
+		public static void FloatParseErrTest(StringView string)
+		{
+			Test.Assert(float.Parse(string) case .Err);
+		}
+
+		[Test]
+		public static void TestErrors()
+		{
+			FloatParseErrTest("");
+			FloatParseErrTest("-");
+			FloatParseErrTest("+");
+			FloatParseErrTest(".");
+			FloatParseErrTest("+.");
+			FloatParseErrTest("-.");
+			FloatParseErrTest("E");
+			FloatParseErrTest("e");
+			FloatParseErrTest(".E");
+			FloatParseErrTest(".e");
+			FloatParseErrTest("-.E");
+			FloatParseErrTest("-.e");
+			FloatParseErrTest("+.E");
+			FloatParseErrTest("+.e");
+			FloatParseErrTest("5E-");
+			FloatParseErrTest("5e-");
+			FloatParseErrTest("6E+");
+			FloatParseErrTest("6e+");
+		}
+
+		public static void MinMaxTest<T>(T expectedMinValue, T expectedMaxValue)
+		where T : IMinMaxValue<T>
+		where int : operator T <=> T
+		{
+			Test.Assert(T.MinValue == expectedMinValue);
+			Test.Assert(T.MaxValue == expectedMaxValue);
+		}
+
+		[Test]
+		public static void TestMinMax()
+		{
+			MinMaxTest<float>(Float.MinValue, Float.MaxValue);
+			MinMaxTest<double>(Double.MinValue, Double.MaxValue);
+		}
 	}
 }

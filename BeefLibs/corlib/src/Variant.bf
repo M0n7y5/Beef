@@ -65,7 +65,25 @@ namespace System
 				}
 				if (mStructType <= 1)
 				{
+					if (mData == 0)
+						return null;
 					return Internal.UnsafeCastToObject((void*)mData).GetType();
+				}
+				return (Type)Internal.UnsafeCastToObject((void*)(mStructType & ~3));
+			}
+		}
+
+		public Type RawVariantType
+		{
+			get
+			{
+				if (mStructType == 2)
+				{
+					return (Type)Internal.UnsafeCastToObject((void*)mData);
+				}
+				if (mStructType <= 1)
+				{
+					return Internal.UnsafeCastToObject((void*)mData).[Friend]RawGetType();
 				}
 				return (Type)Internal.UnsafeCastToObject((void*)(mStructType & ~3));
 			}
@@ -325,6 +343,15 @@ namespace System
 			}
 			else
 				return *(T*)(void*)mData;
+		}
+
+		public bool TryGet<T>(out T value)
+		{
+			value = default;
+			if (VariantType != typeof(T))
+				return false;
+			value = Get<T>();
+			return true;
 		}
 
 		public Result<Object> GetBoxed()

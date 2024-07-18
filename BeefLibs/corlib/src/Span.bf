@@ -23,6 +23,7 @@ namespace System
 			}
 			mPtr = &array.[Friend]GetRef(0);
 			mLength = array.[Friend]mLength;
+			Debug.Assert(mLength >= 0);
 		}
 
 		public this(T[] array, int index)
@@ -35,10 +36,12 @@ namespace System
 			}
 			mPtr = &array[index];
 			mLength = array.[Friend]mLength - index;
+			Debug.Assert(mLength >= 0);
 		}
 
 		public this(T[] array, int index, int length)
 		{
+			Debug.Assert(length >= 0);
 			if (array == null)
 			{
 				Debug.Assert(index == 0 && length == 0);
@@ -54,6 +57,7 @@ namespace System
 
 		public this(T* memory, int length)
 		{
+			Debug.Assert(length >= 0);
 			mPtr = memory;
 			mLength = length;
 		}
@@ -290,6 +294,14 @@ namespace System
 			Internal.MemMove(destination.mPtr, mPtr, Internal.GetArraySize<T>(mLength), (int32)alignof(T));
 		}
 
+		public void CopyTo(int index, Span<T> array, int arrayIndex, int count)
+		{
+			Debug.Assert((uint)index < (uint)Length);
+			Debug.Assert((uint)index + (uint)count <= (uint)Length);
+			for (int i = 0; i < count; i++)
+				array[i + arrayIndex] = Ptr[i + index];
+		}
+
 		public Span<uint8> ToRawData()
 		{
 			return Span<uint8>((uint8*)mPtr, mLength * sizeof(T));
@@ -297,7 +309,14 @@ namespace System
 
 		public void Sort(Comparison<T> comp)
 		{
-			var sorter = Sorter<T, void>(Ptr, null, Length, comp);
+			var sorter = Sorter<T, void, Comparison<T>>(Ptr, null, Length, comp);
+			sorter.[Friend]Sort(0, Length);
+		}
+
+		public void Sort<TComparer>(TComparer comp)
+			where TComparer : Comparison<T>
+		{
+			var sorter = Sorter<T, void, TComparer>(Ptr, null, Length, comp);
 			sorter.[Friend]Sort(0, Length);
 		}
 
@@ -311,7 +330,7 @@ namespace System
 		public override void ToString(String strBuffer)
 		{
 			strBuffer.Append("(");
-			typeof(T).GetFullName(strBuffer);
+			typeof(T).ToString(strBuffer);
 			strBuffer.AppendF("*)0x{0:A}[{1}]", (uint)(void*)mPtr, mLength);
 		}
 
@@ -492,6 +511,16 @@ namespace System
 				return &CurrentRef;
 			}
 		}
+
+		public void Reverse()
+		{
+			for (int i < mLength / 2)
+			{
+				var temp = mPtr[i];
+				mPtr[i] = mPtr[mLength - 1 - i];
+				mPtr[mLength - 1 - i] = temp;
+			}
+		}
 	}
 
 #if BF_RUNTIME_CHECKS
@@ -606,7 +635,7 @@ namespace System
 		public OptSpan<uint8> ToRawData()
 		{
 #if BF_OPTSPAN_LENGTH
-			return OptSpan<uint8>((uint8*)mPtr, mLength * alignof(T));
+			return OptSpan<uint8>((uint8*)mPtr, mLength * strideof(T));
 #else
 			return OptSpan<uint8>((uint8*)mPtr, 0);
 #endif			

@@ -447,6 +447,7 @@ enum CeFunctionKind
 	CeFunctionKind_Method_GetInfo,
 	CeFunctionKind_Method_GetParamInfo,
 	CeFunctionKind_Method_GetGenericArg,
+	CeFunctionKind_Field_GetStatic,
 
 	CeFunctionKind_SetReturnType,
 	CeFunctionKind_Align,
@@ -700,7 +701,8 @@ enum CeEvalFlags
 	CeEvalFlags_DeferIfNotOnlyError = 4,
 	CeEvalFlags_NoRebuild = 8,
 	CeEvalFlags_ForceReturnThis = 0x10,
-	CeEvalFlags_DbgCall = 0x20
+	CeEvalFlags_IgnoreConstEncodeFailure = 0x20,
+	CeEvalFlags_DbgCall = 0x40
 };
 
 #define BF_CE_DEFAULT_STACK_SIZE 4*1024*1024
@@ -1105,6 +1107,7 @@ public:
 	Dictionary<Val128, addr_ce> mConstDataMap;
 	HashSet<int> mStaticCtorExecSet;
 	Dictionary<String, CeStaticFieldInfo> mStaticFieldMap;
+	Dictionary<int64, CeStaticFieldInfo> mStaticFieldIdMap;
 	Dictionary<int, CeInternalData*> mInternalDataMap;
 	int mCurHandleId;
 

@@ -568,6 +568,23 @@ namespace IDE
 			}
 		}
 
+		public bool MenuHasFocus
+		{
+			get
+			{
+				for (var window in mWindows)
+				{
+					var widgetWindow = window as WidgetWindow;
+					if ((widgetWindow != null) && (widgetWindow.mHasFocus))
+					{
+						if (widgetWindow.mRootWidget is MenuContainer)
+							return true;
+					}
+				}
+				return false;
+			}
+		}
+
 		[CallingConvention(.Stdcall),CLink]
 		static extern void IDEHelper_ProgramStart();
 		[CallingConvention(.Stdcall),CLink]
@@ -575,6 +592,8 @@ namespace IDE
 
         public this()
         {
+			ThreadPool.MaxStackSize = 8*1024*1024;
+
             sApp = this;
 			gApp = this;
 			mMainThread = Thread.CurrentThread;
@@ -2010,6 +2029,23 @@ namespace IDE
 						sd.Add(stepFilter.mFilter);
 			    }
 				sd.RemoveIfEmpty();
+			}
+
+			using (sd.CreateObject("OutputFilters"))
+			{
+				IDE.Debugger.DebugManager.OutputFilterFlags outputFilterFlags = 0;
+				if (gApp.mDebugger != null)
+				{
+					outputFilterFlags = gApp.mDebugger.GetOutputFilterFlags();
+				}
+
+				sd.Add("ModuleLoadMessages", outputFilterFlags.HasFlag(.ModuleLoadMessages));
+				sd.Add("ModuleUnloadMessages", outputFilterFlags.HasFlag(.ModuleUnloadMessages));
+				sd.Add("ProcessExitMessages", outputFilterFlags.HasFlag(.ProcessExitMessages));
+				sd.Add("ThreadCreateMessages", outputFilterFlags.HasFlag(.ThreadCreateMessages));
+				sd.Add("ThreadExitMessages", outputFilterFlags.HasFlag(.ThreadExitMessages));
+				sd.Add("SymbolLoadMessages", outputFilterFlags.HasFlag(.SymbolLoadMessages));
+				sd.Add("ProgramOutput", outputFilterFlags.HasFlag(.ProgramOutput));
 			}
 		}
 
@@ -3466,6 +3502,24 @@ namespace IDE
 					mDebugger.CreateStepFilter(filter, false, .NotFiltered);
 			}
 
+			using (data.Open("OutputFilters"))
+			{
+				IDE.Debugger.DebugManager.OutputFilterFlags outputFilterFlags = 0;
+
+				outputFilterFlags |= data.GetBool("ModuleLoadMessages", false) ? .ModuleLoadMessages : 0;
+				outputFilterFlags |= data.GetBool("ModuleUnloadMessages", false) ? .ModuleUnloadMessages : 0;
+				outputFilterFlags |= data.GetBool("ProcessExitMessages", false) ? .ProcessExitMessages : 0;
+				outputFilterFlags |= data.GetBool("ThreadCreateMessages", false) ? .ThreadCreateMessages : 0;
+				outputFilterFlags |= data.GetBool("ThreadExitMessages", false) ? .ThreadExitMessages : 0;
+				outputFilterFlags |= data.GetBool("SymbolLoadMessages", false) ? .SymbolLoadMessages : 0;
+				outputFilterFlags |= data.GetBool("ProgramOutput", false) ? .ProgramOutput : 0;
+
+				if (gApp.mDebugger != null)
+				{
+					gApp.mDebugger.SetOutputFilterFlags(outputFilterFlags);
+				}
+			}
+
 			return true;
 		}
 
@@ -3787,7 +3841,10 @@ namespace IDE
         {
             var textPanel = GetActiveTextPanel();
             if (textPanel != null)
+			{
                 textPanel.ShowQuickFind(isReplace);
+				return;
+			}
 			else
 			{
 				if (let activeWindow = GetActiveWindow())
@@ -3804,6 +3861,12 @@ namespace IDE
 						widget = widget.mParent;
 					}
 				}
+			}
+
+			var activePanel = GetActivePanel();
+			if (var watchPanel = activePanel as WatchPanel)
+			{
+				watchPanel.mListView.ShowFind();
 			}
         }
 
@@ -3904,6 +3967,12 @@ namespace IDE
 						widget = widget.mParent;
 					}
 				}
+			}
+
+			var activePanel = GetActivePanel();
+			if (var watchPanel = activePanel as WatchPanel)
+			{
+				watchPanel.mListView.FindNext(dir);
 			}
         }
 
@@ -5833,6 +5902,14 @@ namespace IDE
 				internalEditMenu.AddMenuItem("Delayed Autocomplete", null, new (menu) => { ToggleCheck(menu, ref gApp.mDbgDelayedAutocomplete); }, null, null, true, gApp.mDbgDelayedAutocomplete ? 1 : 0);
 				internalEditMenu.AddMenuItem("Time Autocomplete", null, new (menu) => { ToggleCheck(menu, ref gApp.mDbgTimeAutocomplete); }, null, null, true, gApp.mDbgTimeAutocomplete ? 1 : 0);
 				internalEditMenu.AddMenuItem("Perf Autocomplete", null, new (menu) => { ToggleCheck(menu, ref gApp.mDbgPerfAutocomplete); }, null, null, true, gApp.mDbgPerfAutocomplete ? 1 : 0);
+				internalEditMenu.AddMenuItem("Dump Undo Buffer", null, new (menu) =>
+					{
+						if (var panel = GetActiveSourceViewPanel())
+						{
+							var str = panel.mEditWidget.mEditWidgetContent.mData.mUndoManager.ToString(.. scope .());
+							Debug.WriteLine(str);
+						}
+					}, null, null, true, gApp.mDbgPerfAutocomplete ? 1 : 0);
 			}
 
 			//////////
@@ -5869,6 +5946,16 @@ namespace IDE
             AddMenuItem(subMenu, "Clean Beef", "Clean Beef", new => UpdateMenuItem_DebugStopped_HasWorkspace);
 			//subMenu.AddMenuItem("Compile Current File", null, new (menu) => { CompileCurrentFile(); });
             AddMenuItem(subMenu, "Cancel Build", "Cancel Build", new (menu) => { menu.SetDisabled(!IsCompiling); });
+
+			subMenu.AddMenuItem("Verbose", null, new (menu) =>
+				{
+					if (mVerbosity != .Diagnostic)
+						mVerbosity = .Diagnostic;
+					else
+						mVerbosity = .Normal;
+					var sysMenu = (SysMenu)menu;
+					sysMenu.Modify(null, null, null, true, (mVerbosity == .Diagnostic) ? 1 : 0);
+				}, null, null, true, (mVerbosity == .Diagnostic) ? 1 : 0);
 
 			if (mSettings.mEnableDevMode)
 			{
@@ -6426,6 +6513,20 @@ namespace IDE
 								ProcessStartInfo procInfo = scope ProcessStartInfo();
 								procInfo.UseShellExecute = true;
 								procInfo.SetFileName(directory);
+
+								let process = scope SpawnedProcess();
+								process.Start(procInfo).IgnoreError();
+							});
+						item = menu.AddItem("Open in Terminal");
+						item.mOnMenuItemSelected.Add(new (menu) =>
+							{
+								let directory = scope String();
+								Path.GetDirectoryPath(sourceViewPanel.mFilePath, directory);
+
+								ProcessStartInfo procInfo = scope ProcessStartInfo();
+								procInfo.UseShellExecute = true;
+								procInfo.SetFileName(gApp.mSettings.mWindowsTerminal);
+								procInfo.SetWorkingDirectory(directory);
 
 								let process = scope SpawnedProcess();
 								process.Start(procInfo).IgnoreError();
@@ -8443,6 +8544,13 @@ namespace IDE
 					macroList.Add("BF_LARGE_COLLECTIONS");
 			}
 
+			if (workspaceOptions.mRuntimeKind == .Disabled)
+				macroList.Add("BF_RUNTIME_DISABLE");
+			if ((workspaceOptions.mRuntimeKind == .Reduced) || (workspaceOptions.mRuntimeKind == .Disabled))
+				macroList.Add("BF_RUNTIME_REDUCED");
+			if (workspaceOptions.mReflectKind == .Minimal)
+				macroList.Add("BF_REFLECT_MINIMAL");
+
 			// Only supported on Windows at the moment
 			bool hasLeakCheck = false;
             if (workspaceOptions.LeakCheckingEnabled)
@@ -8739,8 +8847,11 @@ namespace IDE
 				shellArgs.Append("/c ");
 				shellArgs.Append("\"");
 				IDEUtils.AppendWithOptionalQuotes(shellArgs, fileName);
-				shellArgs.Append(" ");
-				shellArgs.Append(args);
+				if (!args.IsEmpty)
+				{
+					shellArgs.Append(" ");
+					shellArgs.Append(args);
+				}
 				shellArgs.Append("\"");
 				startInfo.SetFileName("cmd.exe");
 				startInfo.SetArguments(shellArgs);
@@ -8814,7 +8925,7 @@ namespace IDE
             SpawnedProcess process = new SpawnedProcess();
 			if (process.Start(startInfo) case .Err)
 			{
-				OutputLine("Failed to execute \"{0}\"", inFileName);
+				OutputErrorLine("Failed to execute \"{0}\"", inFileName);
 				delete process;
 				delete executionInstance;
 				return null;

@@ -94,6 +94,12 @@ namespace IDE
 			BitcodeAndIRCode,
         }
 
+		public enum ReflectKind
+		{
+			Normal,
+			Minimal
+		}
+
 		public enum PlatformType
 		{
 			case Unknown;
@@ -103,7 +109,7 @@ namespace IDE
 			case iOS;
 			case Android;
 			case Wasm;
-
+			
 			public static PlatformType GetFromName(StringView name, StringView targetTriple = default)
 			{
 				if (!targetTriple.IsWhiteSpace)
@@ -185,10 +191,13 @@ namespace IDE
 
 			public static ToolsetType GetDefaultFor(PlatformType platformType, bool isRelease)
 			{
-				if (isRelease)
-					return .LLVM;
 				if (platformType == .Windows)
+				{
+					if (isRelease)
+						return .LLVM;
 					return .Microsoft;
+				}
+				
 				return .GNU;
 			}
 		}
@@ -260,6 +269,13 @@ namespace IDE
 			Custom
 		}
 
+		public enum RuntimeKind
+		{
+			Default,
+			Reduced,
+			Disabled
+		}
+
 		public class BeefGlobalOptions
 		{
 			[Reflect]
@@ -301,6 +317,10 @@ namespace IDE
 			public bool mLargeStrings;
 			[Reflect]
 			public bool mLargeCollections;
+			[Reflect]
+			public RuntimeKind mRuntimeKind;
+			[Reflect]
+			public ReflectKind mReflectKind;
 			[Reflect]
 			public AllocType mAllocType = .CRT;
 			[Reflect]
@@ -349,7 +369,7 @@ namespace IDE
 				get
 				{
 #if BF_PLATFORM_WINDOWS
-					return mEnableRealtimeLeakCheck && mEnableObjectDebugFlags && (mAllocType == .Debug);
+					return mEnableRealtimeLeakCheck && mEnableObjectDebugFlags && (mAllocType == .Debug) && (mRuntimeKind != .Disabled);
 #else
 					return false;
 #endif
@@ -373,6 +393,8 @@ namespace IDE
 				mNoOmitFramePointers = prev.mNoOmitFramePointers;
 				mLargeStrings = prev.mLargeStrings;
 				mLargeCollections = prev.mLargeCollections;
+				mRuntimeKind = prev.mRuntimeKind;
+				mReflectKind = prev.mReflectKind;
 				mAllocType = prev.mAllocType;
 				mAllocMalloc.Set(prev.mAllocMalloc);
 				mAllocFree.Set(prev.mAllocFree);
@@ -801,7 +823,7 @@ namespace IDE
                                 	data.ConditionalAdd("BfOptimizationLevel", options.mBfOptimizationLevel, isRelease ? .O2 : (platformName == "Win64") ? .OgPlus : .O0);
 								else
 									data.ConditionalAdd("BfOptimizationLevel", options.mBfOptimizationLevel, isRelease ? .O2 : .O0);
-								data.ConditionalAdd("LTOType", options.mLTOType, isRelease ? .Thin : .None);
+								data.ConditionalAdd("LTOType", options.mLTOType, BuildOptions.LTOType.GetDefaultFor(platformType, isRelease));
 								data.ConditionalAdd("AllocType", options.mAllocType, isRelease ? .CRT : .Debug);
 								data.ConditionalAdd("AllocMalloc", options.mAllocMalloc, "");
 								data.ConditionalAdd("AllocFree", options.mAllocFree, "");
@@ -810,6 +832,8 @@ namespace IDE
                                 data.ConditionalAdd("NoOmitFramePointers", options.mNoOmitFramePointers, false);
 								data.ConditionalAdd("LargeStrings", options.mLargeStrings, false);
 								data.ConditionalAdd("LargeCollections", options.mLargeCollections, false);
+								data.ConditionalAdd("RuntimeKind", options.mRuntimeKind);
+								data.ConditionalAdd("ReflectKind", options.mReflectKind);
                                 data.ConditionalAdd("InitLocalVariables", options.mInitLocalVariables, false);
                                 data.ConditionalAdd("RuntimeChecks", options.mRuntimeChecks, !isRelease);
                                 data.ConditionalAdd("EmitDynamicCastCheck", options.mEmitDynamicCastCheck, !isRelease);
@@ -991,22 +1015,18 @@ namespace IDE
 			options.mBfOptimizationLevel = isRelease ? .O2 : .O0;
 			options.mBfSIMDSetting = .SSE2;
 			if (platformType == .Windows)
-			{
-				options.mLTOType = isRelease ? .Thin : .None;
 				options.mBfOptimizationLevel = isRelease ? .O2 : (platformName == "Win64") ? .OgPlus : .O0;
-				options.mToolsetType = isRelease ? .LLVM : .Microsoft;
-			}
-			else if ((platformType == .macOS) == (platformType == .Linux))
-			{
-				options.mLTOType = isRelease ? .Thin : .None;
-				options.mToolsetType = isRelease ? .LLVM : .GNU;
-			}
+			
+			options.mLTOType = BuildOptions.LTOType.GetDefaultFor(platformType, isRelease);
+			options.mToolsetType = ToolsetType.GetDefaultFor(platformType, isRelease);
 
 			options.mAllocType = isRelease ? .CRT : .Debug;
 			options.mEmitDebugInfo = .Yes;
 			options.mNoOmitFramePointers = false;
 			options.mLargeStrings = false;
 			options.mLargeCollections = false;
+			options.mRuntimeKind = .Default;
+			options.mReflectKind = .Normal;
 			options.mInitLocalVariables = false;
 			options.mRuntimeChecks = !isRelease;
 			options.mEmitDynamicCastCheck = !isRelease;
@@ -1107,7 +1127,7 @@ namespace IDE
 					else
 						options.mBfOptimizationLevel = data.GetEnum<BuildOptions.BfOptimizationLevel>("BfOptimizationLevel", isRelease ? .O2 : .O0);
 
-					options.mLTOType = data.GetEnum<BuildOptions.LTOType>("LTOType", isRelease ? .Thin : .None);
+					options.mLTOType = data.GetEnum<BuildOptions.LTOType>("LTOType", BuildOptions.LTOType.GetDefaultFor(platformType, isRelease));
 					options.mAllocType = data.GetEnum<AllocType>("AllocType", isRelease ? .CRT : .Debug);
 					data.GetString("AllocMalloc", options.mAllocMalloc);
 					data.GetString("AllocFree", options.mAllocFree);
@@ -1116,6 +1136,8 @@ namespace IDE
                     options.mNoOmitFramePointers = data.GetBool("NoOmitFramePointers", false);
 					options.mLargeStrings = data.GetBool("LargeStrings", false);
 					options.mLargeCollections = data.GetBool("LargeCollections", false);
+					options.mRuntimeKind = data.GetEnum<RuntimeKind>("RuntimeKind");
+					options.mReflectKind = data.GetEnum<ReflectKind>("ReflectKind");
 					options.mInitLocalVariables = data.GetBool("InitLocalVariables", false);
                     options.mRuntimeChecks = data.GetBool("RuntimeChecks", !isRelease);
                     options.mEmitDynamicCastCheck = data.GetBool("EmitDynamicCastCheck", !isRelease);

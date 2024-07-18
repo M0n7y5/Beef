@@ -1399,7 +1399,20 @@ void BfPrinter::Visit(BfIdentifierNode* identifierNode)
 	Visit(identifierNode->ToBase());
 
 	if (!CheckReplace(identifierNode))
+	{		
+		if (!mOutString.IsEmpty())
+		{
+			char endC = mOutString[mOutString.mLength - 1];
+			if ((endC == '_') || (isalnum((uint8)endC)))
+			{
+				// Can fix spacing in error conditions
+				if (identifierNode->mTriviaStart >= 0)
+					Write(identifierNode, identifierNode->mTriviaStart, identifierNode->mSrcStart - identifierNode->mTriviaStart);
+			}
+		}
+
 		WriteSourceString(identifierNode);
+	}
 }
 
 void BfPrinter::Visit(BfQualifiedNameNode* nameNode)
@@ -2275,7 +2288,11 @@ void BfPrinter::Visit(BfFallthroughStatement* fallthroughStmt)
 	Visit(fallthroughStmt->ToBase());
 
 	VisitChild(fallthroughStmt->mFallthroughToken);
-
+	if (fallthroughStmt->mLabel != NULL)
+	{
+		ExpectSpace();
+		VisitChild(fallthroughStmt->mLabel);
+	}
 	VisitChild(fallthroughStmt->mTrailingSemicolon);
 }
 
@@ -2455,7 +2472,8 @@ void BfPrinter::Visit(BfConstructorDeclaration* ctorDeclaration)
 {
 	//Visit((BfAstNode*)ctorDeclaration);
 
-	ExpectNewLine();
+	if (!ctorDeclaration->IsA<BfAutoConstructorDeclaration>())
+		ExpectNewLine();
 	if (ctorDeclaration->mAttributes != NULL)
 	{
 		QueueVisitChild(ctorDeclaration->mAttributes);
@@ -2496,8 +2514,14 @@ void BfPrinter::Visit(BfConstructorDeclaration* ctorDeclaration)
 	ExpectSpace();
 	QueueVisitChild(ctorDeclaration->mInitializer);
 
-	QueueVisitChild(ctorDeclaration->mFatArrowToken);
+	if (ctorDeclaration->mFatArrowToken != NULL)
+	{
+		ExpectSpace();
+		QueueVisitChild(ctorDeclaration->mFatArrowToken);
+		ExpectSpace();
+	}
 	QueueVisitChild(ctorDeclaration->mBody);
+	QueueVisitChild(ctorDeclaration->mEndSemicolon);
 
 	FlushVisitChild();
 }
@@ -3006,20 +3030,35 @@ void BfPrinter::Visit(BfTypeDeclaration* typeDeclaration)
 	ExpectSpace();
 	QueueVisitChild(typeDeclaration->mNameNode);
 	QueueVisitChild(typeDeclaration->mGenericParams);
-	QueueVisitChild(typeDeclaration->mAutoCtor);
+
 	if (typeDeclaration->mColonToken != NULL)
 	{
 		ExpectSpace();
 		QueueVisitChild(typeDeclaration->mColonToken);
+	}
+
+	if (typeDeclaration->mAutoCtor != NULL)
+	{
+		ExpectSpace();
+		QueueVisitChild(typeDeclaration->mAutoCtor);
+	}
+
+	if (typeDeclaration->mColonToken != NULL)
+	{
+		int nextCommaIdx = -1;
+		if (typeDeclaration->mAutoCtor != NULL)
+			nextCommaIdx++;
+
 		for (int i = 0; i < (int)typeDeclaration->mBaseClasses.size(); i++)
 		{
 			ExpectSpace();
 			QueueVisitChild(typeDeclaration->mBaseClasses[i]);
-			if (i > 0)
-			{
-				QueueVisitChild(typeDeclaration->mBaseClassCommas.GetSafe(i - 1));
-			}
+			if (nextCommaIdx >= 0)
+				QueueVisitChild(typeDeclaration->mBaseClassCommas.GetSafe(nextCommaIdx));
+			nextCommaIdx++;
 		}
+		if (nextCommaIdx >= 0)
+			QueueVisitChild(typeDeclaration->mBaseClassCommas.GetSafe(nextCommaIdx));
 		ExpectSpace();
 	}
 	QueueVisitChild(typeDeclaration->mGenericConstraintsDeclaration);

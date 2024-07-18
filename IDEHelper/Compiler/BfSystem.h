@@ -166,6 +166,13 @@ struct BfAtomCompositeEquals
 	}
 };
 
+enum BfFailHandleKind
+{
+	BfFailHandleKind_Normal,
+	BfFailHandleKind_Soft,
+	BfFailHandleKind_Ignore
+};
+
 enum BfWhileSpecializingFlags : int8
 {
 	BfWhileSpecializingFlag_None = 0,
@@ -233,11 +240,18 @@ enum BfMethodFlags
 	BfMethodFlags_Static = 0x10,
 	BfMethodFlags_Virtual = 0x40,
 	BfMethodFlags_ReadOnly = 0x100,
+	BfMethodFlags_Mixin = 0x200,
 	BfMethodFlags_StdCall = 0x1000,
 	BfMethodFlags_FastCall = 0x2000,
 	BfMethodFlags_ThisCall = 0x3000,
 	BfMethodFlags_Mutating = 0x4000,
 	BfMethodFlags_Constructor = 0x8000
+};
+
+enum BfComptimeMethodFlags
+{
+	BfComptimeMethodFlags_None = 0,
+	BfComptimeMethodFlags_NoReflect = 1
 };
 
 enum BfObjectFlags : uint8
@@ -343,7 +357,8 @@ enum BfOptLevel
 enum BfLTOType
 {
 	BfLTOType_None = 0,
-	BfLTOType_Thin = 1
+	BfLTOType_Thin = 1,
+	BfLTOType_Fat = 2
 };
 
 enum BfCFLAAType
@@ -970,8 +985,10 @@ public:
 	bool IsDefaultCtor();
 	bool IsCtorOrInit();
 	String ToString();
+	String GetReflectName();
 	int GetExplicitParamCount();
 	void BuildParamNameMap();
+	bool CanReflect();
 };
 
 class BfOperatorDef : public BfMethodDef

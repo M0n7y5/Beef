@@ -84,6 +84,54 @@ namespace Tests
 			Test.Assert(a == 1);
 			Test.Assert(b == 2);
 
+			ee = default;
+			switch (ee)
+			{
+			case default:
+				Test.Assert(true);
+			default:
+				Test.Assert(false);
+			}
+
+			ee = .B(123);
+			switch (ee)
+			{
+			case default:
+				Test.Assert(false);
+			default:
+				Test.Assert(true);
+			}
+
+			switch (ee)
+			{
+			case .B(100):
+				Test.Assert(false);
+			case .B(123):
+				Test.Assert(true);
+			default:
+				Test.Assert(false);
+			}
+
+			switch (ee)
+			{
+			case .B(123):
+				Test.Assert(true);
+			case .B:
+				Test.Assert(false);
+			default:
+				Test.Assert(false);
+			}
+
+			switch (ee)
+			{
+			case .A:
+			case .B(123):
+				Test.Assert(true);
+			case .B:
+				Test.Assert(false);
+			case .C:
+			}
+
 			EnumF ef = .EE(.C(3, 4));
 			switch (ef)
 			{

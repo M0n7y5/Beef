@@ -578,6 +578,14 @@ BFP_EXPORT void BFP_CALLTYPE BfpSystem_Init(int version, BfpSystemInitFlags flag
     }
 }
 
+BFP_EXPORT void BFP_CALLTYPE BfpSystem_InitCrashCatcher(BfpSystemInitFlags flags)
+{
+}
+
+BFP_EXPORT void BFP_CALLTYPE BfpSystem_ShutdownCrashCatcher()
+{
+}
+
 BFP_EXPORT void BFP_CALLTYPE BfpSystem_SetCommandLine(int argc, char** argv)
 {
     char exePath[PATH_MAX] = { 0 };
@@ -600,7 +608,7 @@ BFP_EXPORT void BFP_CALLTYPE BfpSystem_SetCommandLine(int argc, char** argv)
 			gCmdLine.Append(' ');
 
 		String arg = argv[i];
-		if ((arg.Contains(' ')) || (arg.Contains('\"')))
+		if (arg.IsEmpty() || arg.Contains(' ') || arg.Contains('\t') || arg.Contains('\r') || arg.Contains('\n') || arg.Contains('\"'))
 		{
 			arg.Replace("\"", "\\\"");
 			gCmdLine.Append("\"");

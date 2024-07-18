@@ -3,7 +3,7 @@ using System.Globalization;
 namespace System
 {
 #unwarn
-	struct Float : float, IFloating, ISigned, IFormattable, IHashable, IEquatable<float>, ICanBeNaN
+	struct Float : float, IFloating, ISigned, IFormattable, IHashable, IEquatable<float>, ICanBeNaN, IParseable<float>, IMinMaxValue<float>
     {
 		public const float MinValue = (float)-3.40282346638528859e+38;
 		public const float Epsilon = (float)1.4e-45;
@@ -11,6 +11,9 @@ namespace System
 		public const float PositiveInfinity = 1.0f / 0.0f;
 		public const float NegativeInfinity = -1.0f / 0.0f;
 		public const float NaN = 0.0f / 0.0f;
+
+		public static float IMinMaxValue<float>.MinValue => MinValue;
+		public static float IMinMaxValue<float>.MaxValue => MaxValue;
 
 		// We use this explicit definition to avoid the confusion between 0.0 and -0.0.
 		public const float NegativeZero = (float)-0.0;
@@ -144,7 +147,11 @@ namespace System
 		[CallingConvention(.Stdcall), CLink]
 		static extern int32 ftoa(float val, char8* str);
 
+#if !BF_RUNTIME_DISABLE
 		static extern int32 ToString(float val, char8* str, bool roundTrip);
+#else
+		static int32 ToString(float val, char8* str, bool roundTrip) => Runtime.FatalError();
+#endif
 
 		public override void ToString(String strBuffer)
 		{
@@ -182,6 +189,7 @@ namespace System
 
 			bool isNeg = val[0] == '-';
 			bool isPos = val[0] == '+';
+			bool digitsFound = false;
 			double result = 0;
 			double decimalMultiplier = 0;
 
@@ -205,7 +213,7 @@ namespace System
 				if ((c == 'e') || (c == 'E'))
 				{
 					//Error if there are no numbers after the prefix
-					if(i == val.Length - 1)
+					if(i == val.Length - 1 || !digitsFound)
 						return .Err;
 					var exponent = Try!(int32.Parse(val.Substring(i + 1)));
 					result *= Math.Pow(10, (double)exponent);
@@ -237,10 +245,15 @@ namespace System
 				{
 					result *= 10;
 					result += (int32)(c - '0');
+					digitsFound = true;
 				}
 				else
 					return .Err;
 			}
+
+			if (!digitsFound)
+				return .Err;
+
 			return isNeg ? (float)(-result) : (float)result;
 		}
     }

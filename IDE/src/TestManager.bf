@@ -51,7 +51,7 @@ namespace IDE
 		public int mProjectInfoIdx = -1;
 		public TestInstance mTestInstance ~ delete _;
 		public List<ProjectInfo> mProjectInfos = new .() ~ DeleteContainerAndItems!(_);
-		public List<String> mQueuedOutput = new .() ~ DeleteContainerAndItems!(_);
+		public Queue<String> mQueuedOutput = new .() ~ DeleteContainerAndItems!(_);
 		public Monitor mMonitor = new Monitor() ~ delete _;
 		public String mPrevConfigName ~ delete _;
 		public bool mDebug;
@@ -199,7 +199,7 @@ namespace IDE
 
 					String outputLine = scope String();
 					outputLine.Append(" >");
-					if (crPos - lastCrPos - 2 > 0)
+					if (crPos - lastCrPos - 1 > 0)
 						outputLine.Append(StringView(queuedOutText, lastCrPos + 1, crPos - lastCrPos - 1));
 
 					QueueOutputLine(outputLine);
@@ -318,6 +318,7 @@ namespace IDE
 								break;
 							}
 						case ":TestResult":
+							FlushOutText(true);
 							testTimer.Stop();
 							int timeMS = int32.Parse(cmdParts[1]).Get();
 							var testEntry = testInstance.mTestEntries[testInstance.mCurTestIdx];

@@ -8,6 +8,7 @@
 #include "BfMangler.h"
 #include "BeefySysLib/util/PerfTimer.h"
 #include "BeefySysLib/util/BeefPerf.h"
+#include "BeefySysLib/util/StackHelper.h"
 #include "BfSourceClassifier.h"
 #include "BfAutoComplete.h"
 #include "BfDemangler.h"
@@ -26,6 +27,7 @@
 #pragma warning(disable:4800)
 #pragma warning(disable:4996)
 
+#include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/GlobalValue.h"
@@ -2888,9 +2890,12 @@ BfTypedValue BfModule::TryCaseEnumMatch(BfTypedValue enumVal, BfTypedValue tagVa
 			continue;
 		if ((fieldInstance->mIsEnumPayloadCase) && (fieldDef->mName == enumCaseName))
 		{
-			if ((!enumType->IsTypeMemberIncluded(fieldDef->mDeclaringType, activeTypeDef, this)) ||
-				(!enumType->IsTypeMemberAccessible(fieldDef->mDeclaringType, activeTypeDef)))
-				continue;
+			if (!IsInSpecializedSection())
+			{
+				if ((!enumType->IsTypeMemberIncluded(fieldDef->mDeclaringType, activeTypeDef, this)) ||
+					(!enumType->IsTypeMemberAccessible(fieldDef->mDeclaringType, activeTypeDef)))
+					continue;
+			}
 
 			auto resolvePassData = mCompiler->mResolvePassData;
 			if (resolvePassData != NULL)
@@ -3282,6 +3287,25 @@ void BfModule::AddBasicBlock(BfIRBlock bb, bool activate)
 
 void BfModule::VisitEmbeddedStatement(BfAstNode* stmt, BfExprEvaluator* exprEvaluator, BfEmbeddedStatementFlags flags)
 {
+	if ((flags & BfEmbeddedStatementFlags_CheckStack) != 0)
+	{
+		BP_ZONE("BfModule.VisitEmbeddedStatement");
+
+		StackHelper stackHelper;
+		if (!stackHelper.CanStackExpand(64 * 1024))
+		{
+
+			if (!stackHelper.Execute([&]()
+				{
+					VisitEmbeddedStatement(stmt, exprEvaluator, flags);
+				}))
+			{
+				Fail("Statement too complex to parse", stmt);
+			}
+			return;
+		}
+	}
+
 	auto block = BfNodeDynCast<BfBlock>(stmt);
 	BfLabelNode* labelNode = NULL;
 	if (block == NULL)
@@ -3623,7 +3647,7 @@ void BfModule::VisitCodeBlock(BfBlock* block)
 								exprEvaluator->FinishExpressionResult();
 
 								if ((exprEvaluator->mResult) && (!exprEvaluator->mResult.mType->IsValuelessType()) && (!exprEvaluator->mResult.mValue.IsConst()) &&
-									(!exprEvaluator->mResult.IsAddr()) && (!exprEvaluator->mResult.mValue.IsFake()))
+									(!exprEvaluator->mResult.IsAddr()) && (exprEvaluator->mResult.mValue) && (!exprEvaluator->mResult.mValue.IsFake()))
 								{
 									if ((mCurMethodState->mCurScope != NULL) && (mCurMethodState->mCurScope->mPrevScope != NULL))
 									{
@@ -3642,7 +3666,7 @@ void BfModule::VisitCodeBlock(BfBlock* block)
 										mBfIRBuilder->SetInsertPoint(prevInsertBlock);
 										if (exprEvaluator->mResult.IsSplat())
 											AggregateSplatIntoAddr(exprEvaluator->mResult, tempVar);
-										else
+										else if (!exprEvaluator->mResult.mType->IsValuelessType())
 											mBfIRBuilder->CreateAlignedStore(exprEvaluator->mResult.mValue, tempVar, exprEvaluator->mResult.mType->mAlign);
 										exprEvaluator->mResult = BfTypedValue(tempVar, exprEvaluator->mResult.mType,
 											exprEvaluator->mResult.IsThis() ?
@@ -3945,7 +3969,7 @@ void BfModule::DoIfStatement(BfIfStatement* ifStmt, bool includeTrueStmt, bool i
 			falseDeferredLocalAssignData.ExtendFrom(mCurMethodState->mDeferredLocalAssignData);
 			SetAndRestoreValue<BfDeferredLocalAssignData*> prevDLA(mCurMethodState->mDeferredLocalAssignData, &falseDeferredLocalAssignData);
 			if (includeFalseStmt)
-				VisitEmbeddedStatement(ifStmt->mFalseStatement, NULL, BfEmbeddedStatementFlags_IsConditional);
+				VisitEmbeddedStatement(ifStmt->mFalseStatement, NULL, (BfEmbeddedStatementFlags)(BfEmbeddedStatementFlags_IsConditional | BfEmbeddedStatementFlags_CheckStack));
 		}
 		if ((!mCurMethodState->mLeftBlockUncond) && (!ignoredLastBlock))
 		{
@@ -4604,7 +4628,7 @@ void BfModule::Visit(BfSwitchStatement* switchStmt)
 		if (isPayloadEnum)
 		{
 			auto enumType = switchValue.mType->ToTypeInstance();
-			for (auto fieldInstance : enumType->mFieldInstances)
+			for (auto& fieldInstance : enumType->mFieldInstances)
 			{
 				auto fieldDef = fieldInstance.GetFieldDef();
 				if (fieldDef->IsEnumCaseEntry())
@@ -4640,6 +4664,7 @@ void BfModule::Visit(BfSwitchStatement* switchStmt)
 	bool prevHadFallthrough = false;
 
 	Dictionary<int64, _CaseState> handledCases;
+	HashSet<int64> condCases;
 	for (BfSwitchCase* switchCase : switchStmt->mSwitchCases)
 	{
 		deferredLocalAssignDataVec[blockIdx].mScopeData = mCurMethodState->mCurScope;
@@ -4707,6 +4732,7 @@ void BfModule::Visit(BfSwitchStatement* switchStmt)
 			BfTypedValue caseValue;
 			BfIRBlock doBlock = caseBlock;
 			bool hadConditional = false;
+			bool isEnumDescValue = isPayloadEnum;
 			if (isPayloadEnum)
 			{
 				auto dscrType = switchValue.mType->ToTypeInstance()->GetDiscriminatorType();
@@ -4766,6 +4792,7 @@ void BfModule::Visit(BfSwitchStatement* switchStmt)
 				caseValue = CreateValueFromExpression(caseExpr, switchValue.mType, (BfEvalExprFlags)(BfEvalExprFlags_AllowEnumId | BfEvalExprFlags_NoCast));
 				if (!caseValue)
 					continue;
+				isEnumDescValue = false;
 			}
 
 			BfTypedValue caseIntVal = caseValue;
@@ -4808,22 +4835,42 @@ void BfModule::Visit(BfSwitchStatement* switchStmt)
 			}
 			else if ((constantInt != NULL) && (!hadWhen) && (!isConstSwitch))
 			{
-				if (!hadConditional)
+				if (hadConditional)
+				{
+					condCases.Add(constantInt->mInt64);
+				}
+				else
 				{
 					_CaseState* caseState = NULL;
 					handledCases.TryAdd(constantInt->mInt64, NULL, &caseState);
 
-					if (caseState->mUncondBlock)
+					if (condCases.Contains(constantInt->mInt64))
 					{
-						_ShowCaseError(constantInt->mInt64, caseExpr);
+						// This is a 'case .A:' after a 'case .A(let value):'
+						eqResult = mBfIRBuilder->CreateCmpEQ(enumTagVal.mValue, caseValue.mValue);
+						notEqBB = mBfIRBuilder->CreateBlock(StrFormat("switch.notEq.%d", blockIdx));
+
+						mayHaveMatch = true;
+						mBfIRBuilder->CreateCondBr(eqResult, caseBlock, notEqBB);
+
+						mBfIRBuilder->AddBlock(notEqBB);
+						mBfIRBuilder->SetInsertPoint(notEqBB);
 					}
 					else
 					{
-						caseState->mUncondBlock = doBlock;
-						mBfIRBuilder->AddSwitchCase(switchStatement, caseIntVal.mValue, doBlock);
-						hadConstIntVals = true;
+						if (caseState->mUncondBlock)
+						{
+							_ShowCaseError(constantInt->mInt64, caseExpr);
+						}
+						else
+						{
+							caseState->mUncondBlock = doBlock;
+							mBfIRBuilder->AddSwitchCase(switchStatement, caseIntVal.mValue, doBlock);
+							hadConstIntVals = true;
+						}
 					}
 				}
+
 				mayHaveMatch = true;
 			}
 			else if (!handled)
@@ -4835,7 +4882,7 @@ void BfModule::Visit(BfSwitchStatement* switchStmt)
 					BfExprEvaluator exprEvaluator(this);
 					BfAstNode* refNode = switchCase->mColonToken;
 
-					if ((caseValue.mType->IsPayloadEnum()) && (caseValue.mValue.IsConst()) && (switchValue.mType == caseValue.mType))
+					if ((caseValue.mType->IsPayloadEnum()) && (caseValue.mValue.IsConst()) && (switchValue.mType == caseValue.mType) && (isEnumDescValue))
 					{
 						if (!enumTagVal)
 						{
@@ -5611,11 +5658,27 @@ void BfModule::Visit(BfFallthroughStatement* fallthroughStmt)
 {
 	UpdateSrcPos(fallthroughStmt);
 	BfBreakData* breakData = mCurMethodState->mBreakData;
-	while (breakData != NULL)
+	if (fallthroughStmt->mLabel != NULL)
 	{
-		if (breakData->mIRFallthroughBlock)
-			break;
-		breakData = breakData->mPrevBreakData;
+		breakData = FindBreakData(fallthroughStmt->mLabel);
+	}
+	else
+	{
+		while (breakData != NULL)
+		{
+			if (breakData->mIRFallthroughBlock)
+				break;
+			breakData = breakData->mPrevBreakData;
+		}
+	}
+
+	if ((mCompiler->mResolvePassData != NULL) && (mCompiler->mResolvePassData->mAutoComplete != NULL))
+	{
+		BfScopeData* scope = NULL;
+		if (breakData != NULL)
+			scope = breakData->mScope;
+		if (auto identifer = BfNodeDynCast<BfIdentifierNode>(fallthroughStmt->mLabel))
+			mCompiler->mResolvePassData->mAutoComplete->CheckLabel(identifer, fallthroughStmt->mFallthroughToken, scope);
 	}
 
 	if (mCurMethodState->mInDeferredBlock)
@@ -5643,6 +5706,15 @@ void BfModule::Visit(BfFallthroughStatement* fallthroughStmt)
 	mCurMethodState->mLeftBlockUncond = true; // Not really a return, but handled the same way
 	if (mCurMethodState->mDeferredLocalAssignData != NULL)
 		mCurMethodState->mDeferredLocalAssignData->mHadFallthrough = true;
+
+	auto checkBreakData = mCurMethodState->mBreakData;
+	while (true)
+	{
+		if (checkBreakData == breakData)
+			break;
+		checkBreakData->mHadBreak = true;
+		checkBreakData = checkBreakData->mPrevBreakData;
+	}
 }
 
 void BfModule::Visit(BfUsingStatement* usingStmt)
@@ -6663,12 +6735,18 @@ void BfModule::Visit(BfForEachStatement* forEachStmt)
 			PopulateType(itrInterface, BfPopulateType_Full_Force);
 			getNextMethodInst = GetMethodByName(itrInterface, "GetNext");
 		}
-		BF_ASSERT(getNextMethodInst);
-		nextResult = BfTypedValue(CreateAlloca(getNextMethodInst.mMethodInstance->mReturnType), getNextMethodInst.mMethodInstance->mReturnType, true);
-
-		if (nextResult.mType->IsGenericTypeInstance())
+		if (getNextMethodInst)
 		{
-			nextEmbeddedType = ((BfTypeInstance*)nextResult.mType)->mGenericTypeInfo->mTypeGenericArguments[0];
+			nextResult = BfTypedValue(CreateAlloca(getNextMethodInst.mMethodInstance->mReturnType), getNextMethodInst.mMethodInstance->mReturnType, true);
+
+			if (nextResult.mType->IsGenericTypeInstance())
+			{
+				nextEmbeddedType = ((BfTypeInstance*)nextResult.mType)->mGenericTypeInfo->mTypeGenericArguments[0];
+			}
+		}
+		else
+		{
+			InternalError("Failed to find GetNext");
 		}
 	}
 	if (nextEmbeddedType == NULL)

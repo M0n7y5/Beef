@@ -252,7 +252,7 @@ namespace System.Collections
 			get
 			{
 				return ref mItems[index.Get(mSize)];
-			}
+			} 
 
 			[Checked]
 			set
@@ -318,6 +318,8 @@ namespace System.Collections
 			}
 		}
 
+		public Span<T>.ReverseEnumerator Reversed => Span<T>(mItems, mSize).Reversed;
+
 		protected virtual T* Alloc(int size)
 		{
 			return Internal.AllocRawArrayUnmarked<T>(size);
@@ -330,6 +332,7 @@ namespace System.Collections
 
 		T* Realloc(int newSize, bool autoFree)
 		{
+			Runtime.Assert(newSize <= int_cosize.MaxValue);
 			T* oldAlloc = null;
 			if (newSize > 0)
 			{
@@ -398,7 +401,7 @@ namespace System.Collections
 				Free(oldPtr);
 				return;
 			}
-			Internal.MemCpy(mItems + mSize, addSpan.Ptr, addSpan.Length * alignof(T), alignof(T));
+			Internal.MemCpy(mItems + mSize, addSpan.Ptr, addSpan.Length * strideof(T), alignof(T));
 			mSize += (.)addSpan.Length;
 #if VERSION_LIST
 			mVersion++;
@@ -417,7 +420,7 @@ namespace System.Collections
 				Add(item);
 		}
 
-		public Span<T> GetRange(int offset)
+		public Span<T> GetRange(int offset = 0)
 		{
 			Debug.Assert((uint)offset <= (uint)mSize);
 			return .(mItems + offset, mSize - offset);
@@ -527,6 +530,22 @@ namespace System.Collections
 				span[i] = mItems[i];
 		}
 
+		public void CopyTo(Span<T> array, int arrayIndex)
+		{
+			// Delegate rest of error checking to Array.Copy.
+			for (int i = 0; i < mSize; i++)
+				array[i + arrayIndex] = mItems[i];
+		}
+
+		public void CopyTo(int index, Span<T> array, int arrayIndex, int count)
+		{
+			Debug.Assert((uint)index < (uint)mSize);
+			Debug.Assert((uint)index + (uint)count <= (uint)mSize);
+			// Delegate rest of error checking to Array.Copy.
+			for (int i = 0; i < count; i++)
+				array[i + arrayIndex] = mItems[i + index];
+		}
+
 		public void CopyTo(T[] array, int arrayIndex)
 		{
 			// Delegate rest of error checking to Array.Copy.
@@ -567,7 +586,7 @@ namespace System.Collections
 			EnsureCapacity(size, true);
 			int addSize = size - mSize;
 			if (addSize > 0)
-				Internal.MemSet(Ptr + mSize, 0, addSize * alignof(T));
+				Internal.MemSet(Ptr + mSize, 0, addSize * strideof(T));
 			mSize = (.)size;
 		}
 
@@ -786,14 +805,29 @@ namespace System.Collections
 
 		public void Sort(Comparison<T> comp)
 		{
-			var sorter = Sorter<T, void>(mItems, null, mSize, comp);
+			var sorter = Sorter<T, void, Comparison<T>>(mItems, null, mSize, comp);
+			sorter.[Friend]Sort(0, mSize);
+		}
+
+		public void Sort<TComparer>(TComparer comp)
+			where TComparer : Comparison<T>
+		{
+			var sorter = Sorter<T, void, TComparer>(mItems, null, mSize, comp);
 			sorter.[Friend]Sort(0, mSize);
 		}
 
 		public void Sort(Comparison<T> comp, int index, int count)
 		{
 			Debug.Assert((uint)index + (uint)count <= (uint)mSize);
-			var sorter = Sorter<T, void>(mItems, null, mSize, comp);
+			var sorter = Sorter<T, void, Comparison<T>>(mItems, null, mSize, comp);
+			sorter.[Friend]Sort(index, count);
+		}
+
+		public void Sort<TComparer>(TComparer comp, int index, int count)
+			where TComparer : Comparison<T>
+		{
+			Debug.Assert((uint)index + (uint)count <= (uint)mSize);
+			var sorter = Sorter<T, void, TComparer>(mItems, null, mSize, comp);
 			sorter.[Friend]Sort(index, count);
 		}
 
@@ -1134,7 +1168,7 @@ namespace System.Collections
 
 		public void Sort()
 		{
-			Sort(scope (lhs, rhs) => lhs <=> rhs);
+			Sort((lhs, rhs) => lhs <=> rhs);
 		}
 	}
 
@@ -1144,6 +1178,16 @@ namespace System.Collections
 		{
 			for (var item in this)
 				delete item;
+			Clear();
+		}
+	}
+
+	extension List<T> where T : IDisposable
+	{
+		public void ClearAndDisposeItems()
+		{
+			for (var item in this)
+				item.Dispose();
 			Clear();
 		}
 	}

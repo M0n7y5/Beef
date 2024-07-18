@@ -11,6 +11,13 @@
 #include "BeefySysLib/util/AllocDebug.h"
 
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/Compiler.h"
+#include "llvm/IR/IRBuilder.h"
+#include "llvm/IR/Type.h"
+#include "llvm/IR/DIBuilder.h"
+#include "llvm/IR/DebugInfo.h"
+#include "llvm/IR/Argument.h"
+#include "llvm/IR/Constants.h"
 
 #include "BfCompiler.h"
 #include "BfSystem.h"
@@ -55,11 +62,11 @@ void pt(llvm::Type* t)
 	os << " isSized: " << t->isSized() << "\n";
 	os.flush();
 
-	if (auto pointerType = llvm::dyn_cast<llvm::PointerType>(t))
-	{
-		Beefy::OutputDebugStrF("Element: ");
-		pt(pointerType->getElementType());
-	}
+// 	if (auto pointerType = llvm::dyn_cast<llvm::PointerType>(t))
+// 	{
+// 		Beefy::OutputDebugStrF("Element: ");
+// 		pt(pointerType->getElementType());
+// 	}
 }
 
 void ppt(llvm::Type* t)
@@ -70,7 +77,7 @@ void ppt(llvm::Type* t)
 		Beefy::OutputDebugStrF("Not a pointer type");
 		return;
 	}
-	pt(pointerType->getElementType());
+	//pt(pointerType->getElementType());
 }
 
 void pt(llvm::DINode* t)
@@ -1220,7 +1227,7 @@ void BfCompiler::CreateVData(BfVDataModule* bfModule)
 
 	Array<BfType*> vdataTypeList;
 	HashSet<BfModule*> usedModuleSet;
-	HashSet<BfType*> reflectTypeSet;
+	HashSet<BfType*> reflectSkipTypeSet;
 	HashSet<BfType*> reflectFieldTypeSet;
 
 	vdataHashCtx.MixinStr(project->mStartupObject);
@@ -1398,20 +1405,49 @@ void BfCompiler::CreateVData(BfVDataModule* bfModule)
 	bool madeBfTypeData = false;
 
 	auto typeDefType = mContext->mBfTypeType;
-	bool needsTypeList = bfModule->IsMethodImplementedAndReified(typeDefType, "GetType");
+	bool needsFullTypeList = bfModule->IsMethodImplementedAndReified(typeDefType, "GetType");
+	bool needsTypeList = needsFullTypeList || bfModule->IsMethodImplementedAndReified(typeDefType, "GetType_");
 	bool needsObjectTypeData = needsTypeList || bfModule->IsMethodImplementedAndReified(vdataContext->mBfObjectType, "RawGetType") || bfModule->IsMethodImplementedAndReified(vdataContext->mBfObjectType, "GetType");
 	bool needsTypeNames = bfModule->IsMethodImplementedAndReified(typeDefType, "GetName") || bfModule->IsMethodImplementedAndReified(typeDefType, "GetFullName");
 	bool needsStringLiteralList = (mOptions.mAllowHotSwapping) || (bfModule->IsMethodImplementedAndReified(stringType, "Intern")) || (bfModule->IsMethodImplementedAndReified(stringViewType, "Intern"));
 
-	Dictionary<int, int> usedStringIdMap;
+	BfCreateTypeDataContext createTypeDataCtx;
 
-	reflectTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectTypeInstanceTypeDef));
-	reflectTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectSpecializedGenericType));
-	reflectTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectUnspecializedGenericType));
-	reflectTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectArrayType));
-	reflectTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectGenericParamType));
+	if (!needsTypeList)
+	{
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mTypeTypeDef));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectTypeInstanceTypeDef));
+	}
 
+	if (!needsFullTypeList)
+	{
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectSpecializedGenericType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectUnspecializedGenericType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectConstExprType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectArrayType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectGenericParamType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectPointerType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectSizedArrayType));
+		reflectSkipTypeSet.Add(vdataContext->mUnreifiedModule->ResolveTypeDef(mReflectRefType));
+	}
+
+	HashSet<BfType*> boxeeSet;
+	for (auto type : vdataTypeList)
+	{
+		auto typeInst = type->ToTypeInstance();
+
+		if ((!type->IsReified()) || (type->IsUnspecializedType()))
+			continue;
+
+		if (type->IsBoxed())
+			boxeeSet.Add(typeInst->GetUnderlyingType());
+	}
+
+	int usedTypeCount = 0;
+	HashSet<BfType*> vDataTypeSet;
 	SmallVector<BfIRValue, 256> typeDataVector;
+	Array<BfType*> usedTypeDataVector;
+
 	for (auto type : vdataTypeList)
 	{
 		if (type->IsTypeAlias())
@@ -1425,8 +1461,11 @@ void BfCompiler::CreateVData(BfVDataModule* bfModule)
 		if ((typeInst != NULL) && (!typeInst->IsReified()) && (!typeInst->IsUnspecializedType()))
 			continue;
 
-		bool needsTypeData = (needsTypeList) || ((type->IsObject()) && (needsObjectTypeData));
+		bool needsTypeData = (needsFullTypeList) || ((type->IsObject()) && (needsObjectTypeData));
 		bool needsVData = (type->IsObject()) && (typeInst->HasBeenInstantiated());
+
+		if ((needsObjectTypeData) && (boxeeSet.Contains(typeInst)))
+			needsTypeData = true;
 
 		bool forceReflectFields = false;
 
@@ -1437,8 +1476,16 @@ void BfCompiler::CreateVData(BfVDataModule* bfModule)
 				forceReflectFields = true;
 		}
 
-		BfIRValue typeVariable;
+		if (reflectSkipTypeSet.Contains(type))
+		{
+			if (!bfModule->mProject->mReferencedTypeData.Contains(type))
+			{
+				needsTypeData = false;
+				needsVData = false;
+			}
+		}
 
+		BfIRValue typeVariable;
 		if ((needsTypeData) || (needsVData))
 		{
 			if (reflectFieldTypeSet.Contains(type))
@@ -1446,14 +1493,25 @@ void BfCompiler::CreateVData(BfVDataModule* bfModule)
 				needsTypeData = true;
 				forceReflectFields = true;
 			}
-			else if (reflectTypeSet.Contains(type))
+			/*else if (reflectTypeSet.Contains(type))
 			{
 				needsTypeData = true;
 				needsVData = true;
-			}
+			}*/
 
-			typeVariable = bfModule->CreateTypeData(type, usedStringIdMap, forceReflectFields, needsTypeData, needsTypeNames, needsVData);
+			if (needsVData)
+				vDataTypeSet.Add(type);
+
+			typeVariable = bfModule->CreateTypeData(type, createTypeDataCtx, forceReflectFields, needsTypeData, needsTypeNames, needsVData);
+			if (typeVariable)
+				usedTypeDataVector.Add(type);
 		}
+		else if ((type->IsInterface()) && (typeInst->mSlotNum >= 0))
+		{
+			bfModule->CreateSlotOfs(typeInst);
+		}
+
+		usedTypeCount++;
 		type->mDirty = false;
 
 		if (needsTypeList)
@@ -1573,13 +1631,13 @@ void BfCompiler::CreateVData(BfVDataModule* bfModule)
 		BfMangler::MangleStaticFieldName(stringsVariableName, GetMangleKind(), stringType->ToTypeInstance(), "sIdStringLiterals", stringPtrType);
 		Array<BfIRValue> stringList;
 
-		stringList.Resize(usedStringIdMap.size());
-		for (auto& kv : usedStringIdMap)
+		stringList.Resize(createTypeDataCtx.mUsedStringIdMap.size());
+		for (auto& kv : createTypeDataCtx.mUsedStringIdMap)
 		{
 			stringList[kv.mValue] = bfModule->mStringObjectPool[kv.mKey];
 		}
 
-		BfIRType stringArrayType = bfModule->mBfIRBuilder->GetSizedArrayType(stringPtrIRType, (int)usedStringIdMap.size());
+		BfIRType stringArrayType = bfModule->mBfIRBuilder->GetSizedArrayType(stringPtrIRType, (int)createTypeDataCtx.mUsedStringIdMap.size());
 		auto stringArray = bfModule->mBfIRBuilder->CreateConstAgg_Value(stringArrayType, stringList);
 
 		auto stringArrayVar = bfModule->mBfIRBuilder->CreateGlobalVariable(stringArrayType, true, BfIRLinkageType_External, stringArray, stringsVariableName);
@@ -3994,10 +4052,10 @@ void BfCompiler::VisitSourceExteriorNodes()
 
 						if (auto genericTypeRef = BfNodeDynCast<BfGenericInstanceTypeRef>(usingDirective->mTypeRef))
 						{
-							mContext->mScratchModule->ResolveTypeRefAllowUnboundGenerics(usingDirective->mTypeRef, BfPopulateType_Identity);
+							mContext->mScratchModule->ResolveTypeRefAllowUnboundGenerics(usingDirective->mTypeRef, BfPopulateType_Identity, BfResolveTypeRefFlag_NoReify);
 						}
 						else
-							mContext->mScratchModule->ResolveTypeRef(usingDirective->mTypeRef, BfPopulateType_Identity);
+							mContext->mScratchModule->ResolveTypeRef(usingDirective->mTypeRef, BfPopulateType_Identity, BfResolveTypeRefFlag_NoReify);
 
 						if ((mResolvePassData != NULL) && (mResolvePassData->mAutoComplete != NULL))
 							mResolvePassData->mAutoComplete->CheckTypeRef(usingDirective->mTypeRef, false, false);
@@ -4147,17 +4205,38 @@ void BfCompiler::ProcessAutocompleteTempType()
 			for (auto propDef : tempTypeDef->mProperties)
 			{
 				auto propDeclaration = BfNodeDynCast<BfPropertyDeclaration>(propDef->mFieldDeclaration);
-				if ((propDeclaration == NULL) || (propDeclaration->mNameNode == NULL))
+				if (propDeclaration == NULL)
 					continue;
 
-				String propText = propDef->mName;
+				String propText;
+				BfAstNode* refNode = propDeclaration->mNameNode;
+
+				auto indexerDeclaration = BfNodeDynCast<BfIndexerDeclaration>(propDef->mFieldDeclaration);
+				if (indexerDeclaration != NULL)
+				{
+					refNode = indexerDeclaration->mThisToken;
+					propText = "this[";
+					for (int i = 0; i < indexerDeclaration->mParams.mSize; i++)
+					{
+						if (i > 0)
+							propText += ", ";
+						propText += indexerDeclaration->mParams[i]->ToString();
+					}
+					propText += "]";
+				}
+				else
+				{
+					if (propDeclaration->mNameNode == NULL)
+						continue;
+					propText = propDef->mName;
+				}
+
 				if (typeName != "@")
 					propText = typeName + "." + propText;
 
 				if (!autoCompleteResultString.empty())
 					autoCompleteResultString += "\n";
 
-				BfAstNode* refNode = propDeclaration->mNameNode;
 				module->UpdateSrcPos(refNode, (BfSrcPosFlags)(BfSrcPosFlag_NoSetDebugLoc | BfSrcPosFlag_Force));
 
 				propText += StrFormat("\tproperty\t%d\t%d", module->mCurFilePosition.mCurLine, module->mCurFilePosition.mCurColumn);
@@ -5587,11 +5666,18 @@ void BfCompiler::ClearBuildCache()
 	}
 }
 
+int BfCompiler::GetVDataPrefixDataCount()
+{
+	return (mSystem->mPtrSize == 4) ? 2 : 1;
+}
+
 int BfCompiler::GetDynCastVDataCount()
 {
 	int dynElements = 1 + mMaxInterfaceSlots;
 	return ((dynElements * 4) + mSystem->mPtrSize - 1) / mSystem->mPtrSize;
 }
+
+
 
 bool BfCompiler::IsAutocomplete()
 {
@@ -7156,6 +7242,7 @@ bool BfCompiler::DoCompile(const StringImpl& outputDirectory)
 	mActionTypeDef = _GetRequiredType("System.Action");
 	mEnumTypeDef = _GetRequiredType("System.Enum");
 	mFriendAttributeTypeDef = _GetRequiredType("System.FriendAttribute");
+	mNoStaticCtorAttributeTypeDef = _GetRequiredType("System.NoStaticCtorAttribute");
 	mComptimeAttributeTypeDef = _GetRequiredType("System.ComptimeAttribute");
 	mConstEvalAttributeTypeDef = _GetRequiredType("System.ConstEvalAttribute");
 	mNoExtensionAttributeTypeDef = _GetRequiredType("System.NoExtensionAttribute");
@@ -8424,12 +8511,18 @@ void BfCompiler::GenerateAutocompleteInfo()
 								if (checkMethodInstance->GetNumGenericParams() == 0)
 									checkMethodInstance = methodEntry.mCurMethodInstance;
 
+								bool handled = false;
 								if (genericParamType->mGenericParamIdx < checkMethodInstance->GetNumGenericParams())
 								{
 									auto genericParamInstance = checkMethodInstance->mMethodInfoEx->mGenericParams[genericParamType->mGenericParamIdx];
-									methodText += genericParamInstance->GetGenericParamDef()->mName;
+									auto genericParamDef = genericParamInstance->GetGenericParamDef();
+									if (genericParamDef != NULL)
+									{
+										methodText += genericParamDef->mName;
+										handled = true;
+									}
 								}
-								else
+								if (!handled)
 								{
 									methodText += StrFormat("@M%d", genericParamType->mGenericParamIdx);
 								}
@@ -8443,12 +8536,18 @@ void BfCompiler::GenerateAutocompleteInfo()
 										genericType = methodEntry.mCurMethodInstance->GetOwner()->ToGenericTypeInstance();
 								}
 
+								bool handled = false;
 								if ((genericType != NULL) && (genericParamType->mGenericParamIdx < (int)genericType->mGenericTypeInfo->mGenericParams.size()))
 								{
 									auto genericParamInstance = genericType->mGenericTypeInfo->mGenericParams[genericParamType->mGenericParamIdx];
-									methodText += genericParamInstance->GetGenericParamDef()->mName;
+									auto genericParamDef = genericParamInstance->GetGenericParamDef();
+									if (genericParamDef != NULL)
+									{
+										methodText += genericParamDef->mName;
+										handled = true;
+									}
 								}
-								else
+								if (!handled)
 								{
 									methodText += StrFormat("@T%d", genericParamType->mGenericParamIdx);
 								}

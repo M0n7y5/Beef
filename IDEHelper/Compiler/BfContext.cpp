@@ -420,55 +420,74 @@ bool BfContext::ProcessWorkList(bool onlyReifiedTypes, bool onlyReifiedMethods)
 			didWork = true;
 		}
 
-		for (int workIdx = 0; workIdx < (int)mPopulateTypeWorkList.size(); workIdx++)
+		for (int populatePass = 0; populatePass < 2; populatePass++)
 		{
-			//BP_ZONE("PWL_PopulateType");
-			if (IsCancellingAndYield())
-				break;
-
-			auto workItemRef = mPopulateTypeWorkList[workIdx];
-			if (workItemRef == NULL)
+			for (int workIdx = 0; workIdx < (int)mPopulateTypeWorkList.size(); workIdx++)
 			{
-				workIdx = mPopulateTypeWorkList.RemoveAt(workIdx);
-				continue;
-			}
+				//BP_ZONE("PWL_PopulateType");
+				if (IsCancellingAndYield())
+					break;
+				if (!mMidCompileWorkList.IsEmpty())
+				{
+					// Let these mid-compiles occur as soon as possible
+					break;
+				}
 
-			BfType* type = workItemRef->mType;
-			bool rebuildType = workItemRef->mRebuildType;
+				auto workItemRef = mPopulateTypeWorkList[workIdx];
+				if (workItemRef == NULL)
+				{
+					workIdx = mPopulateTypeWorkList.RemoveAt(workIdx);
+					continue;
+				}
 
-			if ((onlyReifiedTypes) && (!type->IsReified()))
-			{
-				continue;
-			}
+				BfType* type = workItemRef->mType;
+				bool rebuildType = workItemRef->mRebuildType;
 
-			auto typeInst = type->ToTypeInstance();
-			if ((typeInst != NULL) && (resolveParser != NULL))
-			{
-				if (!typeInst->mTypeDef->GetLatest()->HasSource(resolveParser))
+				if ((onlyReifiedTypes) && (!type->IsReified()))
 				{
 					continue;
 				}
+
+				// We want to resolve type aliases first, allowing possible mMidCompileWorkList entries
+				int wantPass = type->IsTypeAlias() ? 0 : 1;
+				if (populatePass != wantPass)
+					continue;
+
+				auto typeInst = type->ToTypeInstance();
+				if ((typeInst != NULL) && (resolveParser != NULL))
+				{
+					if (!typeInst->mTypeDef->GetLatest()->HasSource(resolveParser))
+					{
+						continue;
+					}
+				}
+
+				workIdx = mPopulateTypeWorkList.RemoveAt(workIdx);
+
+				if (rebuildType)
+					RebuildType(type);
+
+				BF_ASSERT(this == type->mContext);
+				auto useModule = type->GetModule();
+				if (useModule == NULL)
+				{
+					if (mCompiler->mOptions.mCompileOnDemandKind == BfCompileOnDemandKind_AlwaysInclude)
+						useModule = mScratchModule;
+					else
+						useModule = mUnreifiedModule;
+				}
+				if (!type->IsDeleting())
+					useModule->PopulateType(type, BfPopulateType_Full);
+				mCompiler->mStats.mQueuedTypesProcessed++;
+				mCompiler->UpdateCompletion();
+				didWork = true;
 			}
+		}
 
-			workIdx = mPopulateTypeWorkList.RemoveAt(workIdx);
-
-			if (rebuildType)
-				RebuildType(type);
-
-			BF_ASSERT(this == type->mContext);
-			auto useModule = type->GetModule();
-			if (useModule == NULL)
-			{
-				if (mCompiler->mOptions.mCompileOnDemandKind == BfCompileOnDemandKind_AlwaysInclude)
-					useModule = mScratchModule;
-				else
-					useModule = mUnreifiedModule;
-			}
-			if (!type->IsDeleting())
-				useModule->PopulateType(type, BfPopulateType_Full);
-			mCompiler->mStats.mQueuedTypesProcessed++;
-			mCompiler->UpdateCompletion();
-			didWork = true;
+		if ((!mMidCompileWorkList.IsEmpty()) && (didWork))
+		{
+			// Let the mid-compile occur ASAP
+			continue;
 		}
 
 		for (int workIdx = 0; workIdx < (int)mTypeRefVerifyWorkList.size(); workIdx++)
@@ -987,7 +1006,8 @@ void BfContext::RebuildType(BfType* type, bool deleteOnDemandTypes, bool rebuild
 	if (type->IsConstExprValue())
 	{
 		auto constExprType = (BfConstExprValueType*)type;
-		if ((constExprType->mValue.mTypeCode != BfTypeCode_StringId) && (constExprType->mType->mSize != mScratchModule->GetPrimitiveType(constExprType->mValue.mTypeCode)->mSize))
+		if ((constExprType->mValue.mTypeCode != BfTypeCode_StringId) && (constExprType->mValue.mTypeCode != BfTypeCode_Struct) &&
+			(constExprType->mType->mSize != mScratchModule->GetPrimitiveType(constExprType->mValue.mTypeCode)->mSize))
 			wantDeleteType = true;
 	}
 	if (wantDeleteType)
@@ -1668,6 +1688,12 @@ void BfContext::PopulateHotTypeDataVTable(BfTypeInstance* typeInstance)
 			methodInstance = parentVirtualMethod;
 		}*/
 
+		if ((methodInstance->mMethodInfoEx == NULL) || (methodInstance->mMethodInfoEx->mMangledName.IsEmpty()))
+		{
+			// This should not occur, we should have build these mangled names already
+			EnsureHotMangledVirtualMethodName(methodInstance);
+		}
+
 		BF_ASSERT(!methodInstance->mMethodInfoEx->mMangledName.IsEmpty());
 
 		auto& entry = hotTypeData->mVTableEntries[vIdx];
@@ -1974,8 +2000,19 @@ void BfContext::DeleteType(BfType* type, bool deferDepRebuilds)
 
 		for (auto dependentType : rebuildTypeQueue)
 		{
+			auto dependentTypeInst = dependentType->ToTypeInstance();
+
+			// This guards against recompile loops
 			if (CanRebuild(dependentType))
+			{
 				RebuildType(dependentType);
+			}
+			else if (dependentTypeInst != NULL)
+			{
+				mGhostDependencies.Add(type);
+				// This keeps us from crashing from accessing deleted types on subsequent compiles
+				mFailTypes.TryAdd(dependentTypeInst, BfFailKind_Normal);
+			}
 		}
 	}
 }
@@ -2182,9 +2219,14 @@ void BfContext::UpdateRevisedTypes()
 		}
 
 		// Rebuild all types
+		Array<BfType*> allTypes;
 		for (auto type : mResolvedTypes)
+			allTypes.Add(type);
+
+		for (auto type : allTypes)
 		{
-			RebuildType(type);
+			if (!type->IsDeleting())
+				RebuildType(type);
 		}
 	}
 
@@ -2378,6 +2420,38 @@ void BfContext::UpdateRevisedTypes()
 					RebuildType(typeInst);
 			}
 		}
+	}
+
+	// Handle these "mid-compiles" now so we handle them as early-stage
+	BfParser* resolveParser = NULL;
+	if ((mCompiler->mResolvePassData != NULL) && (!mCompiler->mResolvePassData->mParsers.IsEmpty()))
+		resolveParser = mCompiler->mResolvePassData->mParsers[0];
+	for (int workIdx = 0; workIdx < (int)mMidCompileWorkList.size(); workIdx++)
+	{
+		auto workItemRef = mMidCompileWorkList[workIdx];
+		if (workItemRef == NULL)
+		{
+			workIdx = mMidCompileWorkList.RemoveAt(workIdx);
+			continue;
+		}
+
+		BfType* type = workItemRef->mType;
+		String reason = workItemRef->mReason;
+
+		auto typeInst = type->ToTypeInstance();
+		if ((typeInst != NULL) && (resolveParser != NULL))
+		{
+			if (!typeInst->mTypeDef->GetLatest()->HasSource(resolveParser))
+			{
+				continue;
+			}
+		}
+
+		workIdx = mMidCompileWorkList.RemoveAt(workIdx);
+
+		BfLogSysM("Handling prior-revision MidCompile on type %s in early-stage UpdateRevisedTypes\n", type);
+		RebuildDependentTypes(type->ToDependedType());
+		//RebuildDependentTypes_MidCompile(type->ToDependedType(), reason);
 	}
 
 	for (auto typeInst : defEmitParentCheckQueue)
@@ -2659,6 +2733,8 @@ void BfContext::UpdateRevisedTypes()
 			RebuildType(type);
 		}
 	}
+
+	BfLogSysM("BfContext::UpdateRevisedTypes done.\n");
 }
 
 void BfContext::VerifyTypeLookups(BfTypeInstance* typeInst)
@@ -3443,6 +3519,7 @@ void BfContext::Cleanup()
 		}
 	}
 	mTypeGraveyard.Clear();
+	mGhostDependencies.Clear();
 
 	if (!mDeletingModules.IsEmpty())
 	{

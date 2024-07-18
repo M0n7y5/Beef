@@ -321,6 +321,14 @@ namespace Beefy.widgets
                 InsertTextAction insertTextAction = nextAction as InsertTextAction;
                 if (insertTextAction == null)
                     return false;
+
+				int curIdx = mCursorTextPos;
+				int nextIdx = insertTextAction.mCursorTextPos;
+				if ((nextIdx != curIdx + mText.Length) ||
+					(mText.EndsWith("\n")) ||
+					(insertTextAction.mText == "\n"))
+					return false;
+
                 if (insertTextAction.mSelection != null)
                 {
                     if (mSelection == null)
@@ -335,14 +343,9 @@ namespace Beefy.widgets
                     mSelectionText.Append(insertTextAction.mSelectionText);
                 }
 
-                int curIdx = mCursorTextPos;
-                int nextIdx = insertTextAction.mCursorTextPos;
                 mRestoreSelectionOnUndo &= insertTextAction.mRestoreSelectionOnUndo;
                 
-                if ((nextIdx != curIdx + mText.Length) ||
-                    (mText.EndsWith("\n")) ||
-                    (insertTextAction.mText == "\n"))
-                    return false;
+                
 
                 mText.Append(insertTextAction.mText);
                 return true;
@@ -374,6 +377,31 @@ namespace Beefy.widgets
                     editWidgetContent.mEditWidget.FinishScroll();
                 return true;
             }
+
+			public override void ToString(String strBuffer)
+			{
+				strBuffer.Append("InsertTextAction");
+				if (mText != null)
+				{
+					strBuffer.Append(" ");
+					mText.Quote(strBuffer);
+				}
+
+				strBuffer.AppendF($" CursorTextPos:{mCursorTextPos}");
+				strBuffer.AppendF(" Selection:");
+				if (mSelection != null)
+				{
+					strBuffer.AppendF($"{mSelection.Value.mStartPos}-{mSelection.Value.mEndPos}");
+				}
+				else
+					strBuffer.AppendF("null");
+
+				if (mSelectionText != null)
+				{
+					strBuffer.AppendF(" SelectionText:");
+					mSelectionText.Quote(strBuffer);
+				}
+			}
         }
 
         public class DeleteCharAction : TextAction
@@ -847,6 +875,7 @@ namespace Beefy.widgets
 				{
 					mSelection = null;
 					MoveCursorToCoord(x, y);
+					ClampCursor();
 				}
 				mDragSelectionKind = .None;
 		    }
@@ -2225,15 +2254,18 @@ namespace Beefy.widgets
 			    else if (lineIdx < GetLineCount() - 1)
 			        MoveCursorTo(lineIdx + 1, 0, false, 0, .SelectRight);
 
-			    if (!mWidgetWindow.IsKeyDown(KeyCode.Control))
-			        break;
-
 			    GetLineCharAtIdx(CursorTextPos, out lineIdx, out lineChar);
 			    anIndex = GetTextIdx(lineIdx, lineChar);
 			    if (anIndex == mData.mTextLength)
 			        break;
 
 			    char8 c = (char8)mData.mText[anIndex].mChar;
+				if ((uint8)c & 0xC0 == 0x80)
+					continue;
+
+				if (!mWidgetWindow.IsKeyDown(KeyCode.Control))
+					break;
+
 			    CharType char8Type = GetCharType(c);
 			    if (char8Type == .Opening)
 			        break;

@@ -3,7 +3,7 @@ using System.Globalization;
 namespace System
 {
 #unwarn
-	struct UInt32 : uint32, IInteger, IUnsigned, IHashable, IFormattable, IIsNaN
+	struct UInt32 : uint32, IInteger, IUnsigned, IHashable, IFormattable, IIsNaN, IParseable<uint32, ParseError>, IParseable<uint32>, IMinMaxValue<uint32>
 	{
 		public enum ParseError
 		{
@@ -15,6 +15,9 @@ namespace System
 
 		public const uint32 MaxValue = 0xFFFFFFFFL;
 		public const uint32 MinValue = 0;
+
+		public static uint32 IMinMaxValue<uint32>.MinValue => MinValue;
+		public static uint32 IMinMaxValue<uint32>.MaxValue => MaxValue;
 
 		public static int operator<=>(Self a, Self b)
 		{
@@ -110,6 +113,7 @@ namespace System
 			if (val.IsEmpty)
 				return .Err(.NoValue);
 
+			bool digitsFound = false;
 			uint32 result = 0;
 			uint32 prevResult = 0;
 
@@ -123,6 +127,7 @@ namespace System
 				{
 					result &*= radix;
 					result &+= (uint32)(c - '0');
+					digitsFound = true;
 				}
 				else if ((c >= 'a') && (c <= 'f'))
 				{
@@ -130,6 +135,7 @@ namespace System
 						return .Err(.InvalidChar(result));
 					result &*= radix;
 					result &+= (uint32)(c - 'a' + 10);
+					digitsFound = true;
 				}
 				else if ((c >= 'A') && (c <= 'F'))
 				{
@@ -137,12 +143,14 @@ namespace System
 						return .Err(.InvalidChar(result));
 					result &*= radix;
 					result &+= (uint32)(c - 'A' + 10);
+					digitsFound = true;
 				}
 				else if ((c == 'X') || (c == 'x'))
 				{
 					if ((!style.HasFlag(.AllowHexSpecifier)) || (i == 0) || (result != 0))
 						return .Err(.InvalidChar(result));
 					radix = 0x10;
+					digitsFound = false;
 				}
 				else if (c == '\'')
 				{
@@ -160,7 +168,24 @@ namespace System
 				prevResult = result;
 			}
 
+			if (!digitsFound)
+				return .Err(.NoValue);
+
 			return result;
+		}
+
+		public static Result<uint32, ParseError> IParseable<uint32, ParseError>.Parse(StringView val)
+		{
+			return Parse(val);
+		}
+
+		public static Result<uint32> IParseable<uint32>.Parse(StringView val)
+		{
+			var res = Parse(val);
+			if(res case .Err)
+				return .Err;
+			else
+				return .Ok(res.Value);
 		}
 	}
 }

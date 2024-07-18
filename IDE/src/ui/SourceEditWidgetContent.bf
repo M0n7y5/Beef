@@ -2889,7 +2889,7 @@ namespace IDE.ui
 					InsertAtCursor("*/");
 
 					if (doComment != null)
-						mSelection = EditSelection(firstCharPos, lastCharPos + gApp.mSettings.mEditorSettings.mTabSize);
+						mSelection = EditSelection(firstCharPos, lastCharPos + 4);
 				}
 
 				if (undoBatchStart != null)
@@ -3139,19 +3139,23 @@ namespace IDE.ui
 				{
 					for (int i = firstCharPos; i <= lastCharPos; i++)
 					{
-						if ((minPos == 0 && i == 0) || (minPos>=0 && SafeGetChar(i - 1) == '\n' || SafeGetChar(i - 1) == '\t'))
-						if (SafeGetChar(i - 0) == '/' && SafeGetChar(i + 1) == '/')
+						if (((minPos == 0) && (i == 0)) ||
+							((minPos >= 0) && (SafeGetChar(i - 1) == '\n') || (SafeGetChar(i - 1) == '\t') || (SafeGetChar(i - 1) == ' ')))
 						{
-							mSelection = EditSelection(i - 0, i + 2);
-							DeleteSelection();
-							lastCharPos -= 2;
-							while (i < maxPos && SafeGetChar(i) != '\n')
+							if (SafeGetChar(i - 0) == '/' && SafeGetChar(i + 1) == '/')
 							{
-								i++;
+								mSelection = EditSelection(i - 0, i + 2);
+								DeleteSelection();
+								lastCharPos -= 2;
+								while (i < maxPos && SafeGetChar(i) != '\n')
+								{
+									i++;
+								}
 							}
 						}
 					}
 
+					startLineAndCol = null;
 					CursorToLineEnd();
 					int cursorEndPos = CursorTextPos;
 					mSelection = .(minPos, cursorEndPos);
@@ -3170,7 +3174,8 @@ namespace IDE.ui
 					}
 				}
 				else if (doComment != false)
-				{ //if selection is from beginning of the line then we want to use // comment, that's why the check for line count and ' ' and tab
+				{
+					//if selection is from beginning of the line then we want to use // comment, that's why the check for line count and ' ' and tab
 					if (doLineComment)
 					{
 						CursorTextPos = minPos;
@@ -3205,6 +3210,7 @@ namespace IDE.ui
 				if (prevSelection == null)
 					mSelection = null;
 
+				ClampCursor();
 				FixSelection();
 
 				return true;
@@ -3666,12 +3672,16 @@ namespace IDE.ui
 		public void MoveLine(VertDir dir)
 		{
 			int lineNum = CursorLineAndColumn.mLine;
+
+			if ((dir == .Up && lineNum < 1) || (dir == .Down && lineNum >= GetLineCount() - 1))
+				return;
+
 			int endLineNum = lineNum;
 
 			GetLinePosition(lineNum, var lineStart, ?);
-			
+
 			// Copy collapsed lines below as well
-			while (endLineNum < mLineCoords.Count - 1)
+			while (endLineNum < mLineCoords.Count - 2)
 			{
 				if (GetLineHeight(endLineNum + 1) > 0.1f)
 					break;
@@ -3771,8 +3781,8 @@ namespace IDE.ui
 
 		void InsertCharPair(String charPair)
 		{
-			mCurParenPairIdSet.Add(mData.mNextCharId);
 			base.InsertCharPair(charPair);
+			mCurParenPairIdSet.Add(mData.mNextCharId - 2);
 		}
 
         public override void KeyChar(char32 keyChar)
@@ -4146,20 +4156,20 @@ namespace IDE.ui
             if (prevElementType != SourceElementType.Comment)
             {
                 doChar = false;
-                char8 char8UnderCursor = (char8)0;
+                char8 charUnderCursor = (char8)0;
 				bool cursorInOpenSpace = false;
 
                 //int cursorTextPos = CursorTextPos;
                 if (cursorTextPos < mData.mTextLength)
                 {
-                    char8UnderCursor = (char8)mData.mText[cursorTextPos].mChar;
-					cursorInOpenSpace = ((char8UnderCursor == ')') || (char8UnderCursor == ']') || (char8UnderCursor == ';') || (char8UnderCursor == (char8)0) || (char8UnderCursor.IsWhiteSpace));
+                    charUnderCursor = (char8)mData.mText[cursorTextPos].mChar;
+					cursorInOpenSpace = ((charUnderCursor == ')') || (charUnderCursor == ']') || (charUnderCursor == ';') || (charUnderCursor == (char8)0) || (charUnderCursor.IsWhiteSpace));
 
-					if (((keyChar == '(') && (char8UnderCursor == ')')) ||
-						((keyChar == '[') && (char8UnderCursor == ']')))
+					if (((keyChar == '(') && (charUnderCursor == ')')) ||
+						((keyChar == '[') && (charUnderCursor == ']')))
 						cursorInOpenSpace = IsCurrentPairClosing(cursorTextPos);
 
-                    if ((char8UnderCursor == keyChar) && (!HasSelection()))
+                    if ((charUnderCursor == keyChar) && (!HasSelection()))
                     {
 						var wantElementType = SourceElementType.Normal;
 
@@ -4355,6 +4365,8 @@ namespace IDE.ui
 
                 if ((needsFreshAutoComplete) && (!didAutoComplete) && (mOnGenerateAutocomplete != null))
                 {
+					if (CheckReadOnly())
+						return;
 					if (IsCursorVisible(false))
 						mOnGenerateAutocomplete(keyChar, isHighPri ? .HighPriority : default);
                 }
@@ -5211,7 +5223,7 @@ namespace IDE.ui
 
         public override void InsertText(int index, String text)
         {
-            if ((IDEApp.sApp.mSymbolReferenceHelper != null) && (mSourceViewPanel != null))
+            if ((IDEApp.sApp.mSymbolReferenceHelper != null) && (mSourceViewPanel != null) && (mSourceViewPanel.IsActiveBeefSource))
                 IDEApp.sApp.mSymbolReferenceHelper.SourcePreInsertText(this, index, text);
 
             for (var persistentTextPosition in PersistentTextPositions)
@@ -5250,7 +5262,7 @@ namespace IDE.ui
             }
 
 			
-            if ((mSourceViewPanel != null) && (IDEApp.sApp.mSymbolReferenceHelper != null))
+            if ((mSourceViewPanel != null) && (IDEApp.sApp.mSymbolReferenceHelper != null) && (mSourceViewPanel.IsActiveBeefSource))
                 IDEApp.sApp.mSymbolReferenceHelper.SourceUpdateText(this, index);
         }
 
@@ -5362,7 +5374,7 @@ namespace IDE.ui
 
 			String curLineStr = scope String();
 			GetLineText(line, curLineStr);
-			int32 lineEnd = (int32)curLineStr.Length;
+			int32 lineEnd = (int32)curLineStr.NumCodePoints;
 
 			mVirtualCursorPos.ValueRef.mColumn = (.)Math.Min(mVirtualCursorPos.Value.mColumn, Math.Max(virtualEnd, lineEnd));
 		}

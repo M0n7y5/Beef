@@ -973,6 +973,7 @@ public:
 
 	BfImportKind GetImportKind();
 	BfMethodFlags GetMethodFlags();
+	BfComptimeMethodFlags GetComptimeMethodFlags();
 	void UndoDeclaration(bool keepIRFunction = false);
 	BfTypeInstance* GetOwner();
 	BfModule* GetModule();
@@ -1392,7 +1393,6 @@ public:
 	int mDataSize;
 	bool mFieldIncluded;
 	bool mIsEnumPayloadCase;
-	bool mIsThreadLocal;
 	bool mIsInferredType;
 	bool mHadConstEval;
 	int mLastRevisionReferenced;
@@ -1417,7 +1417,6 @@ public:
 		mDataSize = copyFrom.mDataSize;
 		mFieldIncluded = copyFrom.mFieldIncluded;
 		mIsEnumPayloadCase = copyFrom.mIsEnumPayloadCase;
-		mIsThreadLocal = copyFrom.mIsThreadLocal;
 		mIsInferredType = copyFrom.mIsInferredType;
 		mHadConstEval = copyFrom.mHadConstEval;
 		mLastRevisionReferenced = copyFrom.mLastRevisionReferenced;
@@ -1439,7 +1438,6 @@ public:
 		mDataSize = copyFrom.mDataSize;
 		mFieldIncluded = copyFrom.mFieldIncluded;
 		mIsEnumPayloadCase = copyFrom.mIsEnumPayloadCase;
-		mIsThreadLocal = copyFrom.mIsThreadLocal;
 		mIsInferredType = copyFrom.mIsInferredType;
 		mHadConstEval = copyFrom.mHadConstEval;
 		mLastRevisionReferenced = copyFrom.mLastRevisionReferenced;
@@ -1458,7 +1456,6 @@ public:
 		mDataOffset = -1;
 		mDataSize = 0;
 		mFieldIncluded = true;
-		mIsThreadLocal = false;
 		mIsInferredType = false;
 		mHadConstEval = false;
 		mLastRevisionReferenced = -1;
@@ -2610,10 +2607,12 @@ class BfConstExprValueType : public BfDependedType
 public:
 	BfType* mType;
 	BfVariant mValue;
+	String mValueString;
 
 public:
 	~BfConstExprValueType();
 
+	virtual bool IsOnDemand() override { return mValue.mTypeCode == BfTypeCode_Struct; }
 	virtual bool IsConstExprValue() override { return true; }
 	virtual BfType* GetUnderlyingType() override { return mType; }
 

@@ -251,15 +251,23 @@ namespace Tests
 			}
 		}
 
-		[CheckEnum]
+		[CheckPayloadEnum]
 		enum EnumA
 		{
 			case A(int64 aa);
 			case B(float bb);
 		}
 
+		[CheckEnum]
+		enum EnumB
+		{
+			case A = 123;
+			case B = 1000;
+			case C = 1200;
+		}
+
 		[AttributeUsage(.All)]
-		public struct CheckEnumAttribute : Attribute, IComptimeTypeApply
+		public struct CheckPayloadEnumAttribute : Attribute, IComptimeTypeApply
 		{
 			public void ApplyToType(Type type)
 			{
@@ -280,6 +288,26 @@ namespace Tests
 					fieldIdx++;
 				}
 				Test.Assert(fieldIdx == 4);
+			}
+		}
+
+		[AttributeUsage(.All)]
+		public struct CheckEnumAttribute : Attribute, IComptimeTypeApply
+		{
+			public void ApplyToType(Type type)
+			{
+				int fieldIdx = 0;
+				for (var field in type.GetFields())
+				{
+					switch (fieldIdx)
+					{
+					case 0:
+						Test.Assert(field.Name == "A");
+						Test.Assert(field.FieldType.UnderlyingType == typeof(int64));
+					}
+					fieldIdx++;
+				}
+				Test.Assert(fieldIdx == 3);
 			}
 		}
 
@@ -481,6 +509,21 @@ namespace Tests
 			}
 		}
 
+		class ClassB
+		{
+			public static int mA = 123;
+		}
+
+		class ClassC
+		{
+			[OnCompile(.TypeInit), Comptime]
+			static void Init()
+			{
+				typeof(ClassB).GetField("mA").Value.GetValue<int>(null, var value);
+				Compiler.EmitTypeBody(typeof(Self), scope $"public static int sA = {1000 + value};");
+			}
+		}
+
 		[Test]
 		public static void TestBasics()
 		{
@@ -498,6 +541,8 @@ namespace Tests
 			Test.Assert(sa.GetValB() == 234);
 			Test.Assert(sa.mC == 345);
 			Test.Assert(sa.GetValC() == 345);
+
+			Test.Assert(ClassC.sA == 1123);
 
 			Compiler.Mixin("int val = 99;");
 			Test.Assert(val == 99);
@@ -531,6 +576,8 @@ namespace Tests
 			ClassB<const 3>.TA f = default;
 			Test.Assert(typeof(decltype(f)) == typeof(float));
 			Test.Assert(ClassB<const 3>.cTimesTen == 30);
+
+
 
 			DictWrapper<Dictionary<int, float>> dictWrap = scope .();
 			dictWrap.[Friend]mValue.Add(1, 2.3f);

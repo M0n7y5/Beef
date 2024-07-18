@@ -15,13 +15,13 @@
 #include "BeefySysLib/util/String.h"
 #include "BfAst.h"
 #include "BfSystem.h"
-#include "llvm/Support/Compiler.h"
+/*#include "llvm/Support/Compiler.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/DIBuilder.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Argument.h"
-#include "llvm/IR/Constants.h"
+#include "llvm/IR/Constants.h"*/
 #include "BfResolvedTypeUtils.h"
 #include <unordered_set>
 #include "BfContext.h"
@@ -442,6 +442,7 @@ public:
 	BfTypeDef* mDisableChecksAttributeTypeDef;
 	BfTypeDef* mDisableObjectAccessChecksAttributeTypeDef;
 	BfTypeDef* mFriendAttributeTypeDef;
+	BfTypeDef* mNoStaticCtorAttributeTypeDef;
 	BfTypeDef* mComptimeAttributeTypeDef;
 	BfTypeDef* mConstEvalAttributeTypeDef;
 	BfTypeDef* mNoExtensionAttributeTypeDef;
@@ -501,6 +502,7 @@ public:
 	void MarkStringPool(BfIRConstHolder* constHolder, BfIRValue irValue);
 	void ClearUnusedStringPoolEntries();
 	void ClearBuildCache();
+	int GetVDataPrefixDataCount();
 	int GetDynCastVDataCount();
 	bool IsAutocomplete();
 	bool IsDataResolvePass();

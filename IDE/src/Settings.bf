@@ -1109,6 +1109,7 @@ namespace IDE
 		public KeySettings mKeySettings = new .() ~ delete _;
 		public RecentFiles mRecentFiles = new RecentFiles() ~ delete _;
 		public String mWakaTimeKey = new .() ~ delete _;
+		public String mWindowsTerminal = new .("Powershell") ~ delete _;
 		public String mEmscriptenPath = new .() ~ delete _;
 		public bool mEnableDevMode;
 		public TutorialsFinished mTutorialsFinished = .();
@@ -1166,6 +1167,8 @@ namespace IDE
 				mDebuggerSettings.Serialize(sd);
 			using (sd.CreateObject("VisualStudio"))
 				mVSSettings.Serialize(sd);
+			using (sd.CreateObject("Terminal"))
+				sd.Add("WindowsTerminal", mWindowsTerminal);
 			using (sd.CreateObject("Wasm"))
 				sd.Add("EmscriptenPath", mEmscriptenPath);
 
@@ -1255,6 +1258,8 @@ namespace IDE
 				mDebuggerSettings.Deserialize(sd);
 			using (sd.Open("VisualStudio"))
 				mVSSettings.Deserialize(sd);
+			using (sd.Open("Terminal"))
+				sd.Get("WindowsTerminal", mWindowsTerminal);
 			using (sd.Open("Wasm"))
 				sd.Get("EmscriptenPath", mEmscriptenPath);
 

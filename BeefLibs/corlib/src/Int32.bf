@@ -3,7 +3,7 @@ using System.Globalization;
 namespace System
 {
 #unwarn
-	struct Int32 : int32, IInteger, ISigned, IHashable, IFormattable, IIsNaN
+	struct Int32 : int32, IInteger, ISigned, IHashable, IFormattable, IIsNaN, IParseable<int32, ParseError>, IParseable<int32>, IMinMaxValue<int32>
 	{
 		public enum ParseError
 		{
@@ -15,6 +15,9 @@ namespace System
 
 		public const int32 MaxValue = 0x7FFFFFFF;
 		public const int32 MinValue = -0x80000000;
+
+		public static int32 IMinMaxValue<int32>.MinValue => MinValue;
+		public static int32 IMinMaxValue<int32>.MaxValue => MaxValue;
 
 		public static int operator<=>(Self a, Self b)
 		{
@@ -132,6 +135,7 @@ namespace System
 				return .Err(.NoValue);
 
 			bool isNeg = false;
+			bool digitsFound = false;
 			int32 result = 0;
 
 			int32 radix = style.HasFlag(.Hex) ? 0x10 : 10;
@@ -150,6 +154,7 @@ namespace System
 				{
 					result &*= radix;
 					result &+= (int32)(c - '0');
+					digitsFound = true;
 				}
 				else if ((c >= 'a') && (c <= 'f'))
 				{
@@ -157,6 +162,7 @@ namespace System
 						return .Err(.InvalidChar(result));
 					result &*= radix;
 					result &+= c - 'a' + 10;
+					digitsFound = true;
 				}
 				else if ((c >= 'A') && (c <= 'F'))
 				{
@@ -164,12 +170,14 @@ namespace System
 						return .Err(.InvalidChar(result));
 					result &*= radix;
 					result &+= c - 'A' + 10;
+					digitsFound = true;
 				}
 				else if ((c == 'X') || (c == 'x'))
 				{
 					if ((!style.HasFlag(.AllowHexSpecifier)) || (i == 0) || (result != 0))
 						return .Err(.InvalidChar(result));
 					radix = 0x10;
+					digitsFound = false;
 				}
 				else if (c == '\'')
 				{
@@ -182,11 +190,28 @@ namespace System
 				else
 					return .Err(.InvalidChar(result));
 
-				if (isNeg ? (uint32)result > (uint32)MinValue : (uint32)result > (uint32)MaxValue)
+				if ((radix == 10) && (isNeg ? (uint32)result > (uint32)MinValue : (uint32)result > (uint32)MaxValue))
 					return .Err(.Overflow);
 			}
 
+			if (!digitsFound)
+				return .Err(.NoValue);
+
 			return isNeg ? -result : result;
+		}
+
+		public static Result<int32, ParseError> IParseable<int32, ParseError>.Parse(StringView val)
+		{
+			return Parse(val);
+		}
+
+		public static Result<int32> IParseable<int32>.Parse(StringView val)
+		{
+			var res = Parse(val);
+			if(res case .Err)
+				return .Err;
+			else
+				return .Ok(res.Value);
 		}
 	}
 }

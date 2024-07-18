@@ -477,6 +477,25 @@ void BfParser::Fail(const StringImpl& error, int offset)
 	mPassInstance->FailAt(error, mSourceData, mSrcIdx + offset);
 }
 
+void BfParser::UnexpectedCharacter()
+{
+	if (mPreprocessorIgnoredSectionNode != NULL)
+		return;
+
+	int startIdx = mTokenStart;
+	int endIdx = startIdx;
+	char32_t c = u8_nextchar((char*)mSrc, &endIdx);
+	int charLen = endIdx - startIdx;
+
+	String str = "Unexpected character '";
+	for (int i = 0; i < charLen; i++)
+		str += mSrc[startIdx + i];
+	str += StrFormat("' (0x%0X)", (int)c);
+
+	mPassInstance->FailAt(str, mSourceData, startIdx);
+	mSrcIdx = endIdx;
+}
+
 void BfParser::TokenFail(const StringImpl& error, int offset)
 {
 	if (mPreprocessorIgnoredSectionNode == NULL)
@@ -2446,7 +2465,8 @@ void BfParser::NextToken(int endIdx, bool outerIsInterpolate, bool disablePrepro
 		case '#':
 			if (disablePreprocessor)
 			{
-				TokenFail("Unexpected character");
+				mTokenStart = mSrcIdx - 1;
+				UnexpectedCharacter();
 				continue;
 			}
 			else
@@ -3457,7 +3477,7 @@ void BfParser::NextToken(int endIdx, bool outerIsInterpolate, bool disablePrepro
 				{
 					AddErrorNode(mTokenStart, mSrcIdx);
 					mTriviaStart = mSrcIdx;
-					TokenFail("Unexpected character");
+					UnexpectedCharacter();
 					continue;
 				}
 			}
@@ -3488,6 +3508,7 @@ void BfParser::ParseBlock(BfBlock* astNode, int depth, bool isInterpolate)
 
 	bool isAsmBlock = false;
 	bool isTernary = false;
+	bool forceAllowNext = false;
 
 	SizedArray<BfAstNode*, 32> childArr;
 
@@ -3503,7 +3524,8 @@ void BfParser::ParseBlock(BfBlock* astNode, int depth, bool isInterpolate)
 				isAsmBlock = true;
 		}
 
-		NextToken(-1, isInterpolate && (parenDepth == 0));
+		NextToken(-1, isInterpolate && (parenDepth == 0) && (!forceAllowNext));
+		forceAllowNext = false;
 
 		if (mPreprocessorIgnoredSectionNode != NULL)
 		{
@@ -3587,7 +3609,10 @@ void BfParser::ParseBlock(BfBlock* astNode, int depth, bool isInterpolate)
 			if ((isInterpolate) && (parenDepth == 0))
 			{
 				if (mToken == BfToken_Question)
+				{
 					isTernary = true;
+					forceAllowNext = true;
+				}
 
 				bool endNow = false;
 				if (mToken == BfToken_Colon)
@@ -3605,6 +3630,7 @@ void BfParser::ParseBlock(BfBlock* astNode, int depth, bool isInterpolate)
 
 					if ((endNow) && (isTernary))
 					{
+						forceAllowNext = true;
 						isTernary = false;
 						endNow = false;
 					}

@@ -47,22 +47,23 @@ namespace Beefy.gfx
         public RenderState mDefaultRenderState ~ delete _;
         public Font mFont;
         public Image mWhiteDot ~ delete _;
+		public List<Image> mWhiteBorderedSquares = new .() ~ DeleteContainerAndItems!(_);
         public float ZDepth { get; set; }
         
         protected DisposeProxy mMatrixDisposeProxy ~ delete _;
-        const int32 MATIX_STACK_SIZE = 256;
+        const int32 MATIX_STACK_SIZE = 4096;
         public Matrix[] mMatrixStack = new Matrix[MATIX_STACK_SIZE] ~ delete _;
         public int32 mMatrixStackIdx = 0;
         public Matrix mMatrix;
 
         protected DisposeProxy mDrawLayerDisposeProxy ~ delete _;
-        const int32 DRAW_LAYER_SIZE = 256;
+        const int32 DRAW_LAYER_SIZE = 4096;
         public DrawLayer[] mDrawLayerStack = new DrawLayer[DRAW_LAYER_SIZE] ~ delete _;
         public int32 mDrawLayerStackIdx = 0;
         public DrawLayer mDrawLayer;
 
         protected DisposeProxy mColorDisposeProxy ~ delete _;
-        const int32 COLOR_STACK_SIZE = 256;
+        const int32 COLOR_STACK_SIZE = 4096;
         public Color[] mColorStack = new Color[COLOR_STACK_SIZE] ~ delete _;
         public int32 mColorStackIdx = 0;
         public Color mColor = Color.White;
@@ -185,6 +186,10 @@ namespace Beefy.gfx
 
             return mMatrixDisposeProxy;
         }
+
+		public DisposeProxy PushTranslate(Vector2 vec) => PushTranslate(vec.mX, vec.mY);
+
+		public DisposeProxy PushScale(float scale) => PushScale(scale, scale);
 
         public DisposeProxy PushScale(float scaleX, float scaleY)
         {
@@ -357,6 +362,8 @@ namespace Beefy.gfx
             return mClipDisposeProxy;
         }
 
+		public DisposeProxy PushClip(Rect rect) => PushClip(rect.mX, rect.mY, rect.mWidth, rect.mHeight);
+
 		RenderState AllocRenderState(Shader shader, Rect? clipRect, bool texWrap)
 		{
 			RenderState renderState = null;
@@ -512,6 +519,15 @@ namespace Beefy.gfx
             Gfx_SetRenderState(mRenderStateStack[--mRenderStateStackIdx].mNativeRenderState);            
         }
 
+		public Image GetBorderedWhiteSquare(int borderSize)
+		{
+			if (borderSize >= mWhiteBorderedSquares.Count)
+				mWhiteBorderedSquares.Count = borderSize + 1;
+			if (mWhiteBorderedSquares[borderSize] == null)
+				mWhiteBorderedSquares[borderSize] = Image.LoadFromFile(scope $"!square{borderSize}");
+			return mWhiteBorderedSquares[borderSize];
+		}
+
         public void Draw(RenderCmd renderCmd)
         {
             Gfx_QueueRenderCmd(renderCmd.mNativeRenderCmd);
@@ -530,6 +546,8 @@ namespace Beefy.gfx
             /*SexyExport.MatrixDrawImageInst(cSGraphics.mGraphics, mImageInstInfos[cel], newMatrix.a, newMatrix.b, newMatrix.c, newMatrix.d, newMatrix.tx, newMatrix.ty,
                 (int)mPixelSnapping, mSmoothing ? 1 : 0, mAdditive ? 1 : 0, (int)g.mColor);*/
         }
+
+		public void Draw(IDrawable drawable, Vector2 vec) => Draw(drawable, vec.mX, vec.mY);
 
         public void DrawButton(Image image, float x, float y, float width)
         {
@@ -893,6 +911,11 @@ namespace Beefy.gfx
             mWhiteDot.Draw(newMatrix, ZDepth, mColor);
         }
 
+		public void FillRect(Rect rect)
+		{
+			FillRect(rect.mX, rect.mY, rect.mWidth, rect.mHeight);
+		}
+
         public void OutlineRect(float x, float y, float width, float height, float thickness = 1)
         {
             FillRect(x, y, width, thickness); // Top
@@ -919,23 +942,55 @@ namespace Beefy.gfx
             Gfx_CopyDrawVertex(4, 1);
             Gfx_SetDrawVertex(5, m.tx + (m.a + m.c), m.ty + (m.b + m.d), 0, 0, 0, Color.Mult(mColor, colorBotRight));
         }
-        
-        public void PolyStart(Image image, int32 vertices)
+
+		void DoDrawLine(float x0, float y0, float x1, float y1, float width)
+		{
+			Image img = GetBorderedWhiteSquare(Math.Max((int)width, 1));
+
+			float ang = Math.Atan2(y1 - y0, x1 - x0);
+
+			// Add 1 pixel to account for transparent border
+			float radius = (width / 2) + 1;
+
+			float xOfs = Math.Cos(ang + Math.PI_f / 2) * radius;
+			float yOfs = Math.Sin(ang + Math.PI_f / 2) * radius;
+
+			//TODO: Multiply color
+
+			Gfx_AllocTris(img.mNativeTextureSegment, 6);
+
+			Gfx_SetDrawVertex(0, x0 - xOfs, y0 - yOfs, 0, 0, 0.5f, mColor);
+			Gfx_SetDrawVertex(1, x0 + xOfs, y0 + yOfs, 0, 1.0f, 0.5f, mColor);
+			Gfx_SetDrawVertex(2, x1 - xOfs, y1 - yOfs, 0, 0, 0.5f, mColor);
+
+			Gfx_CopyDrawVertex(3, 2);
+			Gfx_CopyDrawVertex(4, 1);
+			Gfx_SetDrawVertex(5, x1 + xOfs, y1 + yOfs, 0, 1.0f, 0.5f, mColor);
+		}
+
+		public void DrawLine(float x0, float y0, float x1, float y1, float width = 1.0f)
+		{
+			var pt0 = mMatrix.Multiply(Point(x0, y0));
+			var pt1 = mMatrix.Multiply(Point(x1, y1));
+			DoDrawLine(pt0.x, pt0.y, pt1.x, pt1.y, width);
+		}
+
+        public void PolyStart(Image image, int vertices)
         {
-            Gfx_AllocTris(image.mNativeTextureSegment, vertices);            
+            Gfx_AllocTris(image.mNativeTextureSegment, (.)vertices);            
         }
 
-        public void PolyVertex(int32 idx, float x, float y, float u, float v, Color color = Color.White)
+        public void PolyVertex(int idx, float x, float y, float u, float v, Color color = Color.White)
         {
             Matrix m = mMatrix;
             float aX = m.tx + m.a * x + m.c * y;
             float aY = m.ty + m.b * x + m.d * y;
-            Gfx_SetDrawVertex(idx, aX, aY, 0, u, v, color);
+            Gfx_SetDrawVertex((.)idx, aX, aY, 0, u, v, color);
         }
 
-        public void PolyVertexCopy(int32 idx, int32 srcIdx)
+        public void PolyVertexCopy(int idx, int srcIdx)
         {
-            Gfx_CopyDrawVertex(idx, srcIdx);
+            Gfx_CopyDrawVertex((.)idx, (.)srcIdx);
         }
     }
 #else

@@ -94,6 +94,8 @@ DebugManager::DebugManager()
 	mSymSrvOptions.mSymbolServers.Add("http://127.0.0.1/symbols");
 
 	SetSourceServerCacheDir();
+
+	mOutputFilterFlags = BfOutputFilterFlags_None;
 }
 
 DebugManager::~DebugManager()
@@ -141,6 +143,16 @@ void DebugManager::SetSourceServerCacheDir()
 		RecursiveDeleteDirectory(mSymSrvOptions.mSourceServerCacheDir);
 	}
 #endif
+}
+
+void DebugManager::SetOutputFilterFlags(BfOutputFilterFlags outputFilterFlags)
+{
+	mOutputFilterFlags = outputFilterFlags;
+}
+
+BfOutputFilterFlags DebugManager::GetOutputFilterFlags()
+{
+	return mOutputFilterFlags;
 }
 
 //#define CAPTURE_ALLOC_BACKTRACE
@@ -573,10 +585,10 @@ void ShowMemoryUsage()
 	return HeapAlloc(hHeap, dwFlags, dwBytes);
 }*/
 
-static void BfFatalErrorHandler(void *user_data, const std::string& reason, bool gen_crash_diag)
+static void BfFatalErrorHandler(void *user_data, const char* reason, bool gen_crash_diag)
 {
-	BF_FATAL(reason.c_str());
-	OutputDebugStrF("LLVM ERROR: %s\n", reason.c_str());
+	BF_FATAL(reason);
+	OutputDebugStrF("LLVM ERROR: %s\n", reason);
 }
 
 #ifdef BF_PLATFORM_WINDOWS
@@ -1536,6 +1548,13 @@ BF_EXPORT const char* BF_CALLTYPE Debugger_GetModulesInfo()
 	return outString.c_str();
 }
 
+BF_EXPORT const char* BF_CALLTYPE Debugger_GetModuleInfo(const char* moduleName)
+{
+	String& outString = *gTLStrReturn.Get();
+	outString = gDebugger->GetModuleInfo(moduleName);
+	return outString.c_str();
+}
+
 BF_EXPORT void BF_CALLTYPE Debugger_CancelSymSrv()
 {
 	gDebugger->CancelSymSrv();
@@ -1659,6 +1678,24 @@ BF_EXPORT const char* BF_CALLTYPE Debugger_GetEmitSource(char* inFilePath)
 		return NULL;
 
 	return outString.c_str();
+}
+
+BF_EXPORT void BF_CALLTYPE Debugger_SetOutputFilterFlags(int flags)
+{
+	if (gDebugManager != NULL)
+	{
+		gDebugManager->SetOutputFilterFlags((BfOutputFilterFlags)flags);
+	}
+}
+
+BF_EXPORT int BF_CALLTYPE Debugger_GetOutputFilterFlags()
+{
+	if (gDebugManager != NULL)
+	{
+		return (int)gDebugManager->GetOutputFilterFlags();
+	}
+
+	return 0;
 }
 
 BF_EXPORT NetResult* HTTP_GetFile(char* url, char* destPath)

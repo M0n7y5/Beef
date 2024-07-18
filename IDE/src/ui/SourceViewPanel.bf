@@ -643,6 +643,8 @@ namespace IDE.ui
 			}
 		}
 
+		public bool IsActiveBeefSource => mIsBeefSource && (FilteredProjectSource != null);
+
         public this(SourceEmbedKind embedKind = .None)
         {
 			mEmbedKind = embedKind;
@@ -7631,6 +7633,8 @@ namespace IDE.ui
 
 				let c = ewc.mData.mText[checkPos].mChar;
 				if ((c.IsLetterOrDigit) || (c == '_') || (c == '@'))
+					return true;
+				if ((offset == 0) && (c == '.'))
 					return true;
 				let elementType = (SourceElementType)ewc.mData.mText[checkPos].mDisplayTypeId;
 				if (elementType == .Method)
