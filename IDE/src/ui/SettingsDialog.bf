@@ -62,7 +62,7 @@ namespace IDE.ui
 			AddCategoryItem(root, "Compiler");
 		    AddCategoryItem(root, "Debugger");
 			AddCategoryItem(root, "Visual Studio");
-			AddCategoryItem(root, "Terminal");
+			AddCategoryItem(root, "Console");
 			AddCategoryItem(root, "Wasm");
 
 			if (!gApp.mSettings.mVSSettings.IsConfigured())
@@ -170,7 +170,7 @@ namespace IDE.ui
 			category.Open(true, true);
 		}
 
-		void PopulateTerminalOptions()
+		void PopulateConsoleOptions()
 		{
 			mCurPropertiesTarget = gApp.mSettings;
 
@@ -179,6 +179,9 @@ namespace IDE.ui
 			category.mIsBold = true;
 			category.mTextColor = Color.Mult(DarkTheme.COLOR_TEXT, cHeaderColor);
 			AddPropertiesItem(category, "Windows Terminal", "mWindowsTerminal");
+			AddPropertiesItem(category, "Debug Console", "mDebugConsoleKind");
+			AddPropertiesItem(category, "Always Enable Console", "mAlwaysEnableConsole");
+			AddPropertiesItem(category, "Keep Native Console Open", "mKeepNativeConsoleOpen");
 			category.Open(true, true);
 		}
 
@@ -438,7 +441,7 @@ namespace IDE.ui
 				case .VisualStudio:
 					PopulateVSOptions();
 				case .Terminal:
-					PopulateTerminalOptions();
+					PopulateConsoleOptions();
 				case .Wasm:
 					PopulateWasmOptions();
 				default:

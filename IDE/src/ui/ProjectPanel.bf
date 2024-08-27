@@ -2375,7 +2375,7 @@ namespace IDE.ui
 
             base.KeyDown(keyCode, isRepeat);
 
-			if (mWidgetWindow.GetKeyFlags() == .Ctrl)
+			if (mWidgetWindow.GetKeyFlags(true) == .Ctrl)
 			{
 				switch (keyCode)
 				{
@@ -2388,7 +2388,7 @@ namespace IDE.ui
 				default:
 				}
 			}
-			else if (mWidgetWindow.GetKeyFlags() == .None)
+			else if (mWidgetWindow.GetKeyFlags(true) == .None)
 			{
 				if (keyCode == KeyCode.Delete)
 					RemoveSelectedItems();
@@ -2991,7 +2991,7 @@ namespace IDE.ui
 						}
 				    });
 
-				item = folderItem.AddItem("Terminal");
+				item = folderItem.AddItem("External Terminal");
 				item.mOnMenuItemSelected.Add(new (menu) =>
 					{
 						let projectItem = GetSelectedProjectItem();
@@ -3021,6 +3021,36 @@ namespace IDE.ui
 
 							var process = scope SpawnedProcess();
 							process.Start(psi).IgnoreError();
+						}
+					});
+
+				item = folderItem.AddItem("Embedded Terminal");
+				item.mOnMenuItemSelected.Add(new (menu) =>
+					{
+						let projectItem = GetSelectedProjectItem();
+						String path = scope String();
+						if (projectItem == null)
+						{
+							path.Set(gApp.mWorkspace.mDir);
+						}
+						else if (let projectFolder = projectItem as ProjectFolder)
+						{
+							if (projectFolder.mParentFolder == null)
+							{
+								path.Set(projectFolder.mProject.mProjectDir);
+							}
+							else
+								projectFolder.GetFullImportPath(path);
+						}
+						else
+							projectItem.mParentFolder.GetFullImportPath(path);
+
+						if (!path.IsWhiteSpace)
+						{
+#if BF_PLATFORM_WINDOWS
+							gApp.ShowTerminal();
+							gApp.mTerminalPanel.OpenDirectory(path);
+#endif
 						}
 					});
 			}

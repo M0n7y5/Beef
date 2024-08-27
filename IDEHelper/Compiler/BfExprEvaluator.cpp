@@ -5406,11 +5406,14 @@ BfTypedValue BfExprEvaluator::LoadField(BfAstNode* targetSrc, BfTypedValue targe
 	{
 		auto unionInnerType = typeInstance->GetUnionInnerType();
 		if (unionInnerType != resolvedFieldType)
-		{
-			if (!retVal.IsAddr())
-				retVal = mModule->MakeAddressable(retVal);
+		{			
+			BfTypedValue unionTypedValue = retVal;
+			unionTypedValue.mType = unionInnerType;
+			if (!unionTypedValue.IsAddr())
+				unionTypedValue = mModule->MakeAddressable(unionTypedValue);
 			BfIRType llvmPtrType = mModule->mBfIRBuilder->GetPointerTo(mModule->mBfIRBuilder->MapType(resolvedFieldType));
-			retVal.mValue = mModule->mBfIRBuilder->CreateBitCast(retVal.mValue, llvmPtrType);
+			retVal.mValue = mModule->mBfIRBuilder->CreateBitCast(unionTypedValue.mValue, llvmPtrType);
+			retVal.mKind = unionTypedValue.mKind;
 		}
 	}
 
@@ -17550,6 +17553,7 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 
 	mModule->mBfIRBuilder->SaveDebugLocation();
 	SetAndRestoreValue<BfMixinState*> prevMixinState(curMethodState->mMixinState, mixinState);
+	SetAndRestoreValue<BfExprEvaluator*> prevExprEvaluator(curMethodState->mCurScope->mExprEvaluator, NULL);
 
 	BfGetSymbolReferenceKind prevSymbolRefKind = BfGetSymbolReferenceKind_None;
 	if (mModule->mCompiler->mResolvePassData != NULL)
@@ -18145,6 +18149,18 @@ void BfExprEvaluator::DoInvocation(BfAstNode* target, BfMethodBoundExpression* m
 				expectingType = underlyingType;
 			}
 
+			BfType* inRefType = NULL;
+			if ((expectingType != NULL) && (expectingType->IsRef()))
+			{
+				auto refType = (BfRefType*)expectingType;
+				if (refType->mRefKind == BfRefType::RefKind_In)
+				{
+					inRefType = expectingType;
+					auto underlyingType = expectingType->GetUnderlyingType();
+					expectingType = underlyingType;
+				}
+			}
+
 			if (expectingType != NULL)
 			{
 				if (expectingType->IsSizedArray())
@@ -18187,6 +18203,12 @@ void BfExprEvaluator::DoInvocation(BfAstNode* target, BfMethodBoundExpression* m
 							if ((ctorResult) && (!ctorResult.mType->IsVoid()))
 								mResult = ctorResult;
 							mModule->ValidateAllocation(expectingType, invocationExpr->mTarget);
+
+							if ((inRefType != NULL) && (mResult.mType == expectingType) && (mResult.IsAddr()))
+							{
+								// Put back the 'in'
+								mResult = BfTypedValue(mResult.mValue, inRefType);
+							}
 
 							return;
 						}

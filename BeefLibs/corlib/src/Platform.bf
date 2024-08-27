@@ -31,7 +31,8 @@ namespace System
 			PartialData,
 			TempFileError,
 			Timeout,
-			NotEmpty
+			NotEmpty,
+			PipeListening
 		};
 
 		public struct BfpSpawn {}
@@ -243,6 +244,8 @@ namespace System
 		public static void BfpProcess_GetProcessName(BfpProcess* process, char8* outName, int32* inOutNameSize, BfpProcessResult* outResult) => Runtime.NotImplemented();
 		
 		public static int32 BfpProcess_GetProcessId(BfpProcess* process) => Runtime.NotImplemented();
+
+		public static int BfpSpawn_GetProcessId(BfpSpawn* spawn) => Runtime.NotImplemented();;
 #endif
 
 		public enum BfpSpawnFlags : int32
@@ -261,6 +264,7 @@ namespace System
 			ErrorDialog = 0x400,
 			Window_Hide = 0x800,
 			Window_Maximized = 0x1000,
+			NoActivateWindow = 0x2000
 		};
 
 		public enum BfpKillFlags : int32
@@ -286,6 +290,8 @@ namespace System
 		public static extern bool BfpSpawn_WaitFor(BfpSpawn* spawn, int waitMS, int* outExitCode, BfpSpawnResult* outResult);
 		[CallingConvention(.Stdcall), CLink]
 		public static extern void BfpSpawn_GetStdHandles(BfpSpawn* spawn, BfpFile** outStdIn, BfpFile** outStdOut, BfpFile** outStdErr);
+		[CallingConvention(.Stdcall), CLink]
+		public static extern int BfpSpawn_GetProcessId(BfpSpawn* spawn);
 
 		[CallingConvention(.Stdcall), CLink]
 		public static extern int BfpProcess_GetCurrentId();
@@ -451,6 +457,7 @@ namespace System
 			InsufficientBuffer		= (int)Result.InsufficientBuffer,
 			Timeout					= (int)Result.Timeout,
 			NotEmpty				= (int)Result.NotEmpty,
+			PipeListening			= (int)Result.PipeListening,
 		};
 
 #if !BF_RUNTIME_DISABLE
