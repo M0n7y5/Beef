@@ -389,6 +389,9 @@ BfIRCodeGen::~BfIRCodeGen()
 	for (auto typeEx : mIRTypeExs)
 		delete typeEx;
 
+	for (auto kv : mTypeCodeTypeExMap)
+		delete kv.mValue;
+
 	delete mStream;
 	delete mIRBuilder;
 	delete mDIBuilder;
@@ -509,6 +512,19 @@ void pve(const BfIRTypedValue& typedValue)
 	os << "\nType: ";
 	os.flush();
 	pte(typedValue.mTypeEx);
+}
+
+void pirb(llvm::IRBuilder<>* irBuilder)
+{
+	Beefy::debug_ostream os;
+	os << "Debug loc: ";
+	auto debugLoc = irBuilder->getCurrentDebugLocation();
+	if (debugLoc.get() == NULL)
+		os << "NULL";
+	else
+		debugLoc->print(os);	
+	os << "\n";
+	os.flush();
 }
 
 void BfIRCodeGen::FixValues(llvm::StructType* structType, llvm::SmallVector<llvm::Value*, 8>& values)
@@ -2387,7 +2403,7 @@ void BfIRCodeGen::HandleNextCmd()
 			CMD_PARAM(llvm::Value*, lhs);
 			CMD_PARAM(llvm::Value*, rhs);
 			if (lhs->getType()->isFloatingPointTy())
-				SetResult(curId, mIRBuilder->CreateFCmpONE(lhs, rhs));
+				SetResult(curId, mIRBuilder->CreateFCmpUNE(lhs, rhs));
 			else
 				SetResult(curId, mIRBuilder->CreateICmpNE(lhs, rhs));
 		}
@@ -2437,7 +2453,7 @@ void BfIRCodeGen::HandleNextCmd()
 			CMD_PARAM(llvm::Value*, lhs);
 			CMD_PARAM(llvm::Value*, rhs);
 			if (lhs->getType()->isFloatingPointTy())
-				SetResult(curId, mIRBuilder->CreateFCmpUGT(lhs, rhs));
+				SetResult(curId, mIRBuilder->CreateFCmpOGT(lhs, rhs));
 			else
 				SetResult(curId, mIRBuilder->CreateICmpSGT(lhs, rhs));
 		}
@@ -3076,7 +3092,9 @@ void BfIRCodeGen::HandleNextCmd()
 	case BfIRCmd_SetInsertPointAtStart:
 		{
 			CMD_PARAM(llvm::BasicBlock*, block);
-			mIRBuilder->SetInsertPoint(block, block->begin());
+			mIRBuilder->SetInsertPoint(block, block->begin());			
+			// SetInsertPoint can clear the debug loc so reset it here
+			mIRBuilder->SetCurrentDebugLocation(mDebugLoc);			
 		}
 		break;
 	case BfIRCmd_EraseFromParent:

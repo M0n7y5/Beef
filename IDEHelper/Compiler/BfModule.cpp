@@ -778,7 +778,7 @@ public:
 					if (typeInst != NULL)
 					{
 						exprEvaluator.ResolveArgValues(argValues);
-						exprEvaluator.MatchConstructor(objCreateExpr->mTypeRef, objCreateExpr, emtpyThis, typeInst, argValues, false, true);
+						exprEvaluator.MatchConstructor(objCreateExpr->mTypeRef, objCreateExpr, emtpyThis, typeInst, argValues, false, BfMethodGenericArguments(), true);
 					}
 					exprEvaluator.mFunctionBindResult = NULL;
 
@@ -1259,7 +1259,7 @@ void BfModule::SetupIRBuilder(bool dbgVerifyCodeGen)
 		//mBfIRBuilder->mDbgVerifyCodeGen = true;
 		if (
 			(mModuleName == "-")
-			|| (mModuleName == "")
+			//|| (mModuleName == "")
 			//|| (mModuleName == "Tests_FuncRefs")
 			)
 			mBfIRBuilder->mDbgVerifyCodeGen = true;
@@ -2859,7 +2859,11 @@ bool BfModule::CheckProtection(BfProtectionCheckFlags& flags, BfTypeInstance* me
 		}
 		bool allowPrivate = (curCheckType != NULL) && (memberOwner->IsInstanceOf(curCheckType->mTypeDef));
 		if (curCheckType != NULL)
+		{
 			allowPrivate |= IsInnerType(curCheckType->mTypeDef, memberOwner->mTypeDef);
+			if (memberOwner->mTypeDef->IsGlobalsContainer())
+				allowPrivate |= curCheckType->mTypeDef->mNamespace == memberOwner->mTypeDef->mNamespace;
+		}
 		if (allowPrivate)
 			flags = (BfProtectionCheckFlags)(flags | BfProtectionCheckFlag_AllowPrivate | BfProtectionCheckFlag_CheckedPrivate);
 		else
@@ -4761,7 +4765,7 @@ void BfModule::AppendedObjectInit(BfFieldInstance* fieldInst)
 		mBfIRBuilder->CreateStore(GetConstValue8(BfObjectFlag_AppendAlloc), thisFlagsPtr);
 	}
 
-	exprEvaluator.MatchConstructor(fieldDef->GetNameNode(), NULL, thisValue, fieldInst->mResolvedType->ToTypeInstance(), resolvedArgs, false, true, &indexVal);
+	exprEvaluator.MatchConstructor(fieldDef->GetNameNode(), NULL, thisValue, fieldInst->mResolvedType->ToTypeInstance(), resolvedArgs, false, BfMethodGenericArguments(), true, &indexVal);
 }
 
 void BfModule::CheckInterfaceMethod(BfMethodInstance* methodInstance)
@@ -6897,6 +6901,12 @@ BfIRValue BfModule::CreateTypeData(BfType* type, BfCreateTypeDataContext& ctx, b
 	{
 		reflectIncludeAllFields = true;
 		reflectIncludeAllMethods = true;
+	}
+
+	if (typeInstance->IsTuple())
+	{
+		// Required to generate tuple name at runtime
+		reflectIncludeAllFields = true;
 	}
 
 	BfReflectKind reflectKind = BfReflectKind_Type;
@@ -10120,7 +10130,18 @@ BfIRValue BfModule::AllocFromType(BfType* type, const BfAllocTarget& allocTarget
 		{
 			if ((mBfIRBuilder->mIgnoreWrites) ||
 				((mCompiler->mIsResolveOnly) && (!mIsComptimeModule)))
-				return GetDefaultValue(typeInstance);
+			{
+				if (mBfIRBuilder->mIgnoreWrites)
+				{
+					return GetDefaultValue(typeInstance);
+				}
+ 				else
+ 				{
+ 					// Fake with alloca
+					mBfIRBuilder->PopulateType(typeInstance);
+ 					return mBfIRBuilder->CreateAlloca(mBfIRBuilder->MapTypeInst(typeInstance));
+ 				}
+			}
 
 			auto classVDataType = ResolveTypeDef(mCompiler->mClassVDataTypeDef);
 			auto vData = mBfIRBuilder->CreateBitCast(vDataRef, mBfIRBuilder->MapTypeInstPtr(classVDataType->ToTypeInstance()));
@@ -10453,6 +10474,24 @@ void BfModule::SkipObjectAccessCheck(BfTypedValue typedVal)
 		return;
 
 	mCurMethodState->mSkipObjectAccessChecks.Add(typedVal.mValue.mId);
+}
+
+bool BfModule::WantsObjectAccessCheck(BfType* type)
+{
+	if ((mBfIRBuilder->mIgnoreWrites) || (!type->IsObjectOrInterface()) || (mCurMethodState == NULL) || (mCurMethodState->mIgnoreObjectAccessCheck))
+		return false;
+
+	if ((!mCompiler->mOptions.mObjectHasDebugFlags) || (mIsComptimeModule))
+		return false;
+	
+	bool emitObjectAccessCheck = mCompiler->mOptions.mEmitObjectAccessCheck;
+	auto typeOptions = GetTypeOptions();
+	if (typeOptions != NULL)
+		emitObjectAccessCheck = typeOptions->Apply(emitObjectAccessCheck, BfOptionFlags_EmitObjectAccessCheck);
+	if (!emitObjectAccessCheck)
+		return false;
+
+	return true;
 }
 
 void BfModule::EmitObjectAccessCheck(BfTypedValue typedVal)
@@ -12928,7 +12967,9 @@ BfVariant BfModule::TypedValueToVariant(BfAstNode* refNode, const BfTypedValue& 
 	}
 	else
 	{
-		BfVariant::StructData* structData = (BfVariant::StructData*)(new uint8[value.mType->mSize + 4]);
+		int allocSize = value.mType->mSize + 4;
+		BfVariant::StructData* structData = (BfVariant::StructData*)(new uint8[allocSize]);
+		memset(structData, 0, allocSize);
 		structData->mSize = value.mType->mSize;
 		mBfIRBuilder->WriteConstant(value.mValue, structData->mData, value.mType);
 		variant.mTypeCode = BfTypeCode_Struct;
@@ -12938,7 +12979,7 @@ BfVariant BfModule::TypedValueToVariant(BfAstNode* refNode, const BfTypedValue& 
 	return variant;
 }
 
-BfTypedValue BfModule::RemoveRef(BfTypedValue typedValue)
+BfTypedValue BfModule::RemoveRef(BfTypedValue typedValue, bool makeInReadOnly)
 {
 	if ((typedValue.mType != NULL) && (typedValue.mType->IsRef()))
 	{
@@ -12963,7 +13004,7 @@ BfTypedValue BfModule::RemoveRef(BfTypedValue typedValue)
 			BF_ASSERT(typedValue.mValue.IsFake());
 		}
 
-		if (refType->mRefKind == BfRefType::RefKind_In)
+		if ((refType->mRefKind == BfRefType::RefKind_In) && (makeInReadOnly))
 		{
 			if (typedValue.mKind == BfTypedValueKind_Addr)
 				typedValue.mKind = BfTypedValueKind_ReadOnlyAddr;
@@ -16735,13 +16776,38 @@ void BfModule::CreateDelegateInvokeMethod()
 	BfIRValue staticResult;
 
 	auto callingConv = GetIRCallingConvention(mCurMethodInstance);
-
+	auto trueEndBB = trueBB;
+	
 	/// Non-static invocation
 	{
 		auto memberFuncPtr = mBfIRBuilder->GetPointerTo(mBfIRBuilder->MapMethod(mCurMethodInstance));
 		auto memberFuncPtrPtr = mBfIRBuilder->GetPointerTo(memberFuncPtr);
 
 		mBfIRBuilder->SetInsertPoint(trueBB);
+				
+		BfIRValue numVal;
+		if ((mCompiler->mOptions.mObjectHasDebugFlags) && (!mIsComptimeModule) && (mCompiler->mSystem->mPtrSize == 8))
+		{
+			numVal = mBfIRBuilder->CreatePtrToInt(fieldVal, BfTypeCode_UInt64);
+			auto andVal = mBfIRBuilder->CreateAnd(numVal, mBfIRBuilder->CreateConst(BfTypeCode_UInt64, (uint64)~0x8000000000000000ULL));
+			fieldVal = mBfIRBuilder->CreateIntToPtr(andVal, mBfIRBuilder->MapType(mContext->mBfObjectType));
+		}
+
+		if ((WantsObjectAccessCheck(mContext->mBfObjectType) && (mCompiler->mSystem->mPtrSize == 8)))
+		{
+			auto oacDoBB = mBfIRBuilder->CreateBlock("oac.do", true);
+			auto oacDoneBB = mBfIRBuilder->CreateBlock("oac.done");			
+
+			auto checkGTE = mBfIRBuilder->CreateCmpGTE(numVal, mBfIRBuilder->CreateConst(BfTypeCode_UInt64, (uint64)0x8000000000000000ULL), false);
+			mBfIRBuilder->CreateCondBr(checkGTE, oacDoBB, oacDoneBB);
+			mBfIRBuilder->SetInsertPoint(oacDoBB);
+			mBfIRBuilder->CreateObjectAccessCheck(fieldVal, !IsOptimized());
+			mBfIRBuilder->CreateBr(oacDoneBB);
+			mBfIRBuilder->AddBlock(oacDoneBB);
+			mBfIRBuilder->SetInsertPoint(oacDoneBB);
+			trueEndBB = oacDoneBB;
+		}
+
 		memberFuncArgs[thisIdx] = mBfIRBuilder->CreateBitCast(fieldVal, mBfIRBuilder->MapType(mCurTypeInstance));
 		auto fieldPtr = mBfIRBuilder->CreateInBoundsGEP(multicastDelegate, 0, 1); // Load 'delegate.mFuncPtr'
 		auto funcPtrPtr = mBfIRBuilder->CreateBitCast(fieldPtr, memberFuncPtrPtr);
@@ -16810,7 +16876,7 @@ void BfModule::CreateDelegateInvokeMethod()
 		else
 			loweredIRReturnType = mBfIRBuilder->MapType(mCurMethodInstance->mReturnType);
 		auto phi = mBfIRBuilder->CreatePhi(loweredIRReturnType, 2);
-		mBfIRBuilder->AddPhiIncoming(phi, nonStaticResult, trueBB);
+		mBfIRBuilder->AddPhiIncoming(phi, nonStaticResult, trueEndBB);
 		mBfIRBuilder->AddPhiIncoming(phi, staticResult, falseBB);
 		mBfIRBuilder->CreateRet(phi);
 	}
@@ -17083,7 +17149,7 @@ BfTypedValue BfModule::CallBaseCtorCalc(bool constOnly)
 		SetAndRestoreValue<bool> prevIgnoreWrites(mBfIRBuilder->mIgnoreWrites, true);
 		exprEvaluator.ResolveArgValues(argValues, BfResolveArgsFlag_DeferParamEval);
 		SetAndRestoreValue<BfFunctionBindResult*> prevBindResult(exprEvaluator.mFunctionBindResult, &bindResult);
-		exprEvaluator.MatchConstructor(targetRefNode, NULL, target, targetType, argValues, true, true);
+		exprEvaluator.MatchConstructor(targetRefNode, NULL, target, targetType, argValues, true, BfMethodGenericArguments(), true);
 	}
 
 	if (bindResult.mMethodInstance == NULL)
@@ -17130,7 +17196,7 @@ BfTypedValue BfModule::CallBaseCtorCalc(bool constOnly)
 		bindResult.mSkipThis = true;
 		bindResult.mWantsArgs = true;
 		SetAndRestoreValue<BfFunctionBindResult*> prevBindResult(exprEvaluator.mFunctionBindResult, &bindResult);
-		exprEvaluator.MatchConstructor(targetRefNode, NULL, target, targetType, argValues, true, true);
+		exprEvaluator.MatchConstructor(targetRefNode, NULL, target, targetType, argValues, true, BfMethodGenericArguments(), true);
 		BF_ASSERT(bindResult.mIRArgs[0].IsFake());
 		bindResult.mIRArgs.RemoveAt(0);
 		calcAppendArgs = bindResult.mIRArgs;
@@ -18638,7 +18704,7 @@ void BfModule::EmitCtorBody(bool& skipBody)
 			appendIdxVal = BfTypedValue(localVar->mValue, intRefType);
 			mCurMethodState->mCurAppendAlign = 1; // Don't make any assumptions about how the base leaves the alignment
 		}
-        exprEvaluator.MatchConstructor(targetRefNode, NULL, target, targetType, argValues, true, methodDef->mHasAppend, &appendIdxVal);
+        exprEvaluator.MatchConstructor(targetRefNode, NULL, target, targetType, argValues, true, BfMethodGenericArguments(), methodDef->mHasAppend, &appendIdxVal);
 
 		if (autoComplete != NULL)
 		{
@@ -21775,10 +21841,10 @@ void BfModule::ProcessMethod(BfMethodInstance* methodInstance, bool isInlineDup,
 				mBfIRBuilder->SaveDebugLocation();
 				mBfIRBuilder->ClearDebugLocation();
 				BfIRValue fromBool;
-				if (!mCurTypeInstance->IsTypedPrimitive())
+				if ((!mCurTypeInstance->IsTypedPrimitive()) || (mCurTypeInstance->IsValuelessType()))
 				{
 					fromBool = GetDefaultValue(methodInstance->mReturnType);
-				}
+				}				
 				else
 				{
 					auto andResult = mBfIRBuilder->CreateAnd(mCurMethodState->mLocals[0]->mValue, mCurMethodState->mLocals[1]->mValue);
@@ -21806,7 +21872,10 @@ void BfModule::ProcessMethod(BfMethodInstance* methodInstance, bool isInlineDup,
 			mBfIRBuilder->ClearDebugLocation();
 			BfIRValue fromBool;
 			mBfIRBuilder->RestoreDebugLocation();
-			ret = mBfIRBuilder->CreateRet(GetThis().mValue);
+			if (!mCurTypeInstance->IsValuelessType())
+				ret = mBfIRBuilder->CreateRet(GetThis().mValue);
+			else
+				mBfIRBuilder->CreateRetVoid();
 			//ExtendLocalLifetimes(0);
 			EmitLifetimeEnds(&mCurMethodState->mHeadScope);
 

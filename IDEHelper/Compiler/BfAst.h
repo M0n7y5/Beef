@@ -137,13 +137,13 @@ struct BfVariant
 	~BfVariant()
 	{
 		if (mTypeCode == BfTypeCode_Struct)
-			delete (uint8*)mPtr;
+			delete [] (uint8*)mPtr;
 	}
 
 	BfVariant& operator=(const BfVariant& variant)
 	{
 		if (mTypeCode == BfTypeCode_Struct)
-			delete (uint8*)mPtr;
+			delete [] (uint8*)mPtr;
 		mTypeCode = variant.mTypeCode;
 		mWarnType = variant.mWarnType;
 		mUInt64 = variant.mUInt64;
@@ -337,6 +337,7 @@ class BfScopeNode;
 class BfNewNode;
 class BfLabeledBlock;
 class BfGenericArgumentsNode;
+class BfCtorExplicitNode;
 class BfStatement;
 class BfLabelableStatement;
 class BfExpression;
@@ -388,6 +389,7 @@ class BfVarRefTypeReference;
 class BfLetTypeReference;
 class BfGenericInstanceTypeRef;
 class BfTupleTypeRef;
+class BfTagTypeRef;
 class BfDelegateTypeRef;
 class BfExprModTypeRef;
 class BfCommentNode;
@@ -529,6 +531,7 @@ public:
 	virtual void Visit(BfGenericOperatorConstraint* genericConstraints);
 	virtual void Visit(BfGenericConstraintsDeclaration* genericConstraints);
 	virtual void Visit(BfGenericArgumentsNode* genericArgumentsNode);
+	virtual void Visit(BfCtorExplicitNode* genericArgumentsNode);
 
 	virtual void Visit(BfEmptyStatement* emptyStmt);
 	virtual void Visit(BfTokenNode* tokenNode);
@@ -559,6 +562,7 @@ public:
 	virtual void Visit(BfArrayTypeRef* typeRef);
 	virtual void Visit(BfGenericInstanceTypeRef* typeRef);
 	virtual void Visit(BfTupleTypeRef* typeRef);
+	virtual void Visit(BfTagTypeRef* typeRef);
 	virtual void Visit(BfDelegateTypeRef* typeRef);
 	virtual void Visit(BfExprModTypeRef* declTypeRef);
 	virtual void Visit(BfPointerTypeRef* typeRef);
@@ -2665,6 +2669,15 @@ public:
 	}
 };	BF_AST_DECL(BfTupleTypeRef, BfElementedTypeRef);
 
+class BfTagTypeRef : public BfTypeReference
+{
+public:
+	BF_AST_TYPE(BfTagTypeRef, BfTypeReference);
+
+	BfIdentifierNode* mTagNode;
+	BfIdentifierNode* mNameNode;
+};	BF_AST_DECL(BfTagTypeRef, BfTypeReference);
+
 class BfDelegateTypeRef : public BfTypeReference
 {
 public:
@@ -2911,6 +2924,16 @@ public:
 	BfAstNode* mStatement;
 };	BF_AST_DECL(BfAttributedStatement, BfStatement);
 
+class BfCtorExplicitNode : public BfAstNode
+{
+public:
+	BF_AST_TYPE(BfCtorExplicitNode, BfAstNode);
+
+	BfAstNode* mDotToken;
+	BfTokenNode* mThisToken;
+	BfGenericArgumentsNode* mGenericArgs;
+};	BF_AST_DECL(BfCtorExplicitNode, BfAstNode);
+
 class BfObjectCreateExpression : public BfMethodBoundExpression
 {
 public:
@@ -2919,6 +2942,7 @@ public:
 	BfAstNode* mNewNode;
 	BfTokenNode* mStarToken;
 	BfTypeReference* mTypeRef;
+	BfCtorExplicitNode* mCtorExplicit;
 	BfTokenNode* mOpenToken;
 	BfTokenNode* mCloseToken;
 	BfSizedArray<BfExpression*> mArguments;

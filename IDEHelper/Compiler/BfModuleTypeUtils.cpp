@@ -1132,11 +1132,30 @@ bool BfModule::CheckCircularDataError(bool failTypes)
 		}
 		else if (checkTypeState->mCurFieldDef != NULL)
 		{
-			Fail(StrFormat("Field '%s.%s' causes a data cycle", TypeToString(checkTypeState->mType).c_str(), checkTypeState->mCurFieldDef->mName.c_str()));
+			BfAstNode* refNode = checkTypeState->mCurFieldDef->GetRefNode();
+
+			if (refNode == NULL)
+			{
+				if (checkTypeState->mCurTypeDef != NULL)
+					refNode = checkTypeState->mCurTypeDef->GetRefNode();
+			}
+
+			auto checkSrcTypeState = checkTypeState;
+			while ((refNode == NULL) && (checkSrcTypeState != NULL))
+			{
+				if (checkSrcTypeState->mCurFieldDef != NULL)
+					refNode = checkSrcTypeState->mCurFieldDef->GetRefNode();
+				checkSrcTypeState = checkSrcTypeState->mPrevState;
+			}
+
+			Fail(StrFormat("Field '%s.%s' causes a data cycle", TypeToString(checkTypeState->mType).c_str(), checkTypeState->mCurFieldDef->mName.c_str()), refNode, true);
 		}
 		else
 		{
-			Fail(StrFormat("Type '%s' causes a data cycle", TypeToString(checkTypeState->mType).c_str()));
+			BfAstNode* refNode = NULL;
+			if (checkTypeState->mCurTypeDef != NULL)
+				refNode = checkTypeState->mCurTypeDef->GetRefNode();
+			Fail(StrFormat("Type '%s' causes a data cycle", TypeToString(checkTypeState->mType).c_str()), refNode, true);
 		}
 
 		auto typeInstance = checkTypeState->mType->ToTypeInstance();
@@ -3581,7 +3600,9 @@ void BfModule::DoPopulateType_FinishEnum(BfTypeInstance* typeInstance, bool unde
 		{
 			BfTypeCode typeCode;
 
-			if ((min >= -0x80) && (max <= 0x7F))
+			if ((min == 0) && (max == 0))
+				typeCode = BfTypeCode_None;
+			else if ((min >= -0x80) && (max <= 0x7F))
 				typeCode = BfTypeCode_Int8;
 			else if ((min >= 0) && (max <= 0xFF))
 				typeCode = BfTypeCode_UInt8;
@@ -3912,7 +3933,8 @@ void BfModule::DoPopulateType(BfType* resolvedTypeRef, BfPopulateType populateTy
 		if ((typeInstance->mRebuildFlags & BfTypeRebuildFlag_UnderlyingTypeDeferred) != 0)
 			underlyingTypeDeferred = true;
 	}
-	else if (typeInstance->IsEnum())
+	
+	if ((typeInstance->IsEnum()) && (underlyingType == NULL) && (!underlyingTypeDeferred))
 	{
 		bool hasPayloads = false;
 		for (auto fieldDef : typeDef->mFields)
@@ -4458,6 +4480,7 @@ void BfModule::DoPopulateType(BfType* resolvedTypeRef, BfPopulateType populateTy
 		}
 
 		typeInstance->mBaseType = baseTypeInst;
+		typeInstance->mWantsGCMarking = baseTypeInst->mWantsGCMarking;
 		typeInstance->mInheritDepth = baseTypeInst->mInheritDepth + 1;
 		typeInstance->mHasParameterizedBase = baseTypeInst->mHasParameterizedBase;
 		if ((baseTypeInst->IsArray()) || (baseTypeInst->IsSizedArray()) || (baseTypeInst->IsGenericTypeInstance()))
@@ -5516,7 +5539,7 @@ void BfModule::DoPopulateType(BfType* resolvedTypeRef, BfPopulateType populateTy
 							BfTypedValue emptyThis(mBfIRBuilder->GetFakeVal(), resolvedTypeRef, resolvedTypeRef->IsStruct());
 
 							exprEvaluator.mBfEvalExprFlags = BfEvalExprFlags_Comptime;
-							auto ctorResult = exprEvaluator.MatchConstructor(nameRefNode, NULL, emptyThis, fieldTypeInst, resolvedArgs, false, true);
+							auto ctorResult = exprEvaluator.MatchConstructor(nameRefNode, NULL, emptyThis, fieldTypeInst, resolvedArgs, false, BfMethodGenericArguments(), true);
 
 							if ((bindResult.mMethodInstance != NULL) && (bindResult.mMethodInstance->mMethodDef->mHasAppend))
 							{
@@ -10843,6 +10866,11 @@ void BfModule::GetDelegateTypeRefAttributes(BfDelegateTypeRef* delegateTypeRef, 
 
 BfType* BfModule::ResolveTypeRef(BfTypeReference* typeRef, BfPopulateType populateType, BfResolveTypeRefFlags resolveFlags, int numGenericArgs)
 {
+	return ResolveTypeRef_Ref(typeRef, populateType, resolveFlags, numGenericArgs);
+}
+
+BfType* BfModule::ResolveTypeRef_Ref(BfTypeReference* typeRef, BfPopulateType populateType, BfResolveTypeRefFlags& resolveFlags, int numGenericArgs)
+{
 	//BP_ZONE("BfModule::ResolveTypeRef");
 
 	if (typeRef == NULL)
@@ -12206,6 +12234,19 @@ BfType* BfModule::ResolveTypeRef(BfTypeReference* typeRef, BfPopulateType popula
 
 		return ResolveTypeResult(typeRef, tupleType, populateType, resolveFlags);
 	}
+	else if (auto tagTypeRef = BfNodeDynCast<BfTagTypeRef>(typeRef))
+	{
+		auto baseType = (BfTypeInstance*)ResolveTypeDef(mContext->mCompiler->mEnumTypeDef, BfPopulateType_Identity);
+
+		BfTagType* tagType = new BfTagType();
+		tagType->Init(baseType->mTypeDef->mProject, baseType, tagTypeRef->mNameNode->ToString());		
+
+		resolvedEntry->mValue = tagType;
+		BF_ASSERT(BfResolvedTypeSet::Hash(tagType, &lookupCtx) == resolvedEntry->mHashCode);
+		populateModule->InitType(tagType, populateType);
+
+		return ResolveTypeResult(typeRef, tagType, populateType, resolveFlags);
+	}
 	else if (auto nullableTypeRef = BfNodeDynCast<BfNullableTypeRef>(typeRef))
 	{
 		BfTypeReference* elementTypeRef = nullableTypeRef->mElementType;
@@ -12748,7 +12789,7 @@ BfTypeInstance* BfModule::GetUnspecializedTypeInstance(BfTypeInstance* typeInst)
 	return result->ToTypeInstance();
 }
 
-BfType* BfModule::ResolveTypeRef_Type(BfAstNode* astNode, const BfSizedArray<BfAstNode*>* genericArgs, BfPopulateType populateType, BfResolveTypeRefFlags resolveFlags)
+BfType* BfModule::ResolveTypeRef_Type(BfAstNode* astNode, const BfSizedArray<BfAstNode*>* genericArgs, BfPopulateType populateType, BfResolveTypeRefFlags& resolveFlags)
 {
 	if ((genericArgs == NULL) || (genericArgs->size() == 0))
 	{
@@ -12758,7 +12799,7 @@ BfType* BfModule::ResolveTypeRef_Type(BfAstNode* astNode, const BfSizedArray<BfA
 			typeRef.mNameNode = identifier;
 			typeRef.mSrcEnd = 0;
 			typeRef.mToken = BfToken_None;
-			auto type = ResolveTypeRef(&typeRef, populateType, resolveFlags);
+			auto type = ResolveTypeRef_Ref(&typeRef, populateType, resolveFlags, 0);
 			return type;
 		}
 	}
@@ -12825,10 +12866,15 @@ BfType* BfModule::ResolveTypeRef_Type(BfAstNode* astNode, const BfSizedArray<BfA
 		typeRef = genericInstanceTypeRef;
 	}
 
-	return ResolveTypeRef(typeRef, populateType, resolveFlags);
+	return ResolveTypeRef_Ref(typeRef, populateType, resolveFlags, 0);
 }
 
 BfType* BfModule::ResolveTypeRef(BfAstNode* astNode, const BfSizedArray<BfAstNode*>* genericArgs, BfPopulateType populateType, BfResolveTypeRefFlags resolveFlags)
+{
+	return ResolveTypeRef_Ref(astNode, genericArgs, populateType, resolveFlags);
+}
+
+BfType* BfModule::ResolveTypeRef_Ref(BfAstNode* astNode, const BfSizedArray<BfAstNode*>* genericArgs, BfPopulateType populateType, BfResolveTypeRefFlags& resolveFlags)
 {
 	if (astNode == NULL)
 	{
@@ -12837,13 +12883,14 @@ BfType* BfModule::ResolveTypeRef(BfAstNode* astNode, const BfSizedArray<BfAstNod
 	}
 
 	if (auto typeRef = BfNodeDynCast<BfTypeReference>(astNode))
-		return ResolveTypeRef(typeRef, populateType, resolveFlags);
+		return ResolveTypeRef_Ref(typeRef, populateType, resolveFlags, 0);
 
 	if ((resolveFlags & BfResolveTypeRefFlag_AllowImplicitConstExpr) != 0)
 	{
 		if (auto expr = BfNodeDynCast<BfExpression>(astNode))
 		{
-			auto checkType = ResolveTypeRef_Type(astNode, genericArgs, populateType, (BfResolveTypeRefFlags)(resolveFlags | BfResolveTypeRefFlag_IgnoreLookupError));
+			resolveFlags = (BfResolveTypeRefFlags)(resolveFlags | BfResolveTypeRefFlag_IgnoreLookupError);
+			auto checkType = ResolveTypeRef_Type(astNode, genericArgs, populateType, resolveFlags);
 			if (checkType != NULL)
 				return checkType;
 
@@ -15749,6 +15796,13 @@ void BfModule::DoTypeToString(StringImpl& str, BfType* resolvedType, BfTypeNameF
 		str += ")";
 		return;
 	}
+	else if ((resolvedType->IsOnDemand()) && (resolvedType->IsEnum()))
+	{
+		auto typeInst = resolvedType->ToTypeInstance();
+		str += "tag ";
+		str += typeInst->mTypeDef->mFields[0]->mName;
+		return;
+	}
 	else if (resolvedType->IsDelegateFromTypeRef() || resolvedType->IsFunctionFromTypeRef())
 	{
 		SetAndRestoreValue<BfTypeInstance*> prevTypeInstance(mCurTypeInstance);
@@ -15862,7 +15916,9 @@ void BfModule::DoTypeToString(StringImpl& str, BfType* resolvedType, BfTypeNameF
 
 		if ((typeNameFlags & BfTypeNameFlag_ExtendedInfo) != 0)
 		{
-			if (typeInstance->mTypeDef->mIsDelegate)
+			if (typeInstance->mTypeDef->IsGlobalsContainer())
+				str += "static ";
+			else if (typeInstance->mTypeDef->mIsDelegate)
 				str += "delegate ";
 			else if (typeInstance->mTypeDef->mIsFunction)
 				str += "function ";

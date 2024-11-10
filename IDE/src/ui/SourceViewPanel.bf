@@ -432,7 +432,7 @@ namespace IDE.ui
 		public bool mLoadFailed;
 		String mOldVerLoadCmd ~ delete _;
 		HTTPRequest mOldVerHTTPRequest ~ delete _;
-		IDEApp.ExecutionInstance mOldVerLoadExecutionInstance ~ { if (_ != null) _.mAutoDelete = true; };
+		IDEApp.ExecutionInstance mOldVerLoadExecutionInstance ~ _?.Release();
 		SourceFindTask mSourceFindTask ~ delete _;
 		HoverResolveTask mHoverResolveTask ~ delete _;
 		bool mWantsFastClassify;
@@ -1932,7 +1932,7 @@ namespace IDE.ui
 			}
 			else if (resolveType == ResolveType.GetCurrentLocation)
 			{
-				PrimaryNavigationBar.SetLocation(autocompleteInfo);
+				PrimaryNavigationBar.SetLocation(autocompleteInfo ?? "");
 			}
 			else if ((resolveType == .Autocomplete) || (resolveType == .GetFixits))
 			{
@@ -4563,7 +4563,7 @@ namespace IDE.ui
 					{
 						mCollapseRegionView.mLineStart = (.)lineStart;
 						mCollapseRegionView.mCollapseIndices.Clear();
-						Internal.MemSet(mCollapseRegionView.mCollapseIndices.GrowUnitialized(drawLineCount), 0, drawLineCount * sizeof(int32));
+						Internal.MemSet(mCollapseRegionView.mCollapseIndices.GrowUninitialized(drawLineCount), 0, drawLineCount * sizeof(int32));
 						mCollapseRegionView.mCollapseRevision = ewc.mCollapseParseRevision;
 						mCollapseRegionView.mTextVersionId = ewc.mCollapseTextVersionId;
 
