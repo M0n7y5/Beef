@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.20)
 
 ################### Variables. ####################
 # Change if you want modify path or other values. #
@@ -41,6 +41,7 @@ if (HAVE_BACKTRACE_HEADERS)
 endif ()
 
 set (CMAKE_CXX_STANDARD 11)
+set (CMAKE_C_STANDARD 11)
 
 if (${APPLE})
     include_directories(
@@ -55,6 +56,7 @@ else()
     include_directories(
       .
       platform/linux
+      platform/sdl
       third_party
       third_party/freetype/include
       ../extern
@@ -117,12 +119,19 @@ endif()
 file(GLOB SRC_FILES
     BeefySysLib.cpp
     BFApp.cpp
+    BFApp.h
     BFWindow.cpp
+    BFWindow.h
     CachedDataStream.cpp
+    CachedDataStream.h
     Common.cpp
+    Common.h
     DataStream.cpp
+    DataStream.h
     FileStream.cpp
+    FileStream.h
     MemStream.cpp
+    MemStream.h
     ResLib.cpp
     Startup.cpp
 
@@ -307,7 +316,7 @@ file(GLOB SRC_FILES
     util/ZipFile.cpp
 )
 
-if (${APPLE})
+if (APPLE)
     file(GLOB SRC_FILES_OS
         platform/darwin/BFPlatform.cpp
         platform/darwin/DarwinCommon.cpp

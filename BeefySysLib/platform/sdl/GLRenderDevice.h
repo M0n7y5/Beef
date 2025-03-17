@@ -3,11 +3,12 @@
 #include "Common.h"
 #include "util/Dictionary.h"
 
-#ifdef BF_PLATFORM_OPENGL_ES2
-#include <SDL2/SDL_opengles2.h>
-#else
-#include <SDL2/SDL_opengl.h>
-#endif
+// #ifdef BF_PLATFORM_OPENGL_ES2
+// #include <SDL2/SDL_opengles2.h>
+// #else
+// #endif
+
+#include <SDL3/SDL_opengl.h>
 
 #include "gfx/Shader.h"
 #include "gfx/Texture.h"

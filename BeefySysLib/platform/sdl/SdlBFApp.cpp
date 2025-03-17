@@ -1,60 +1,62 @@
 #include "SdlBFApp.h"
 #include "GLRenderDevice.h"
 #include "platform/PlatformHelper.h"
-#include <SDL2/SDL.h>
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_init.h>
+#include <SDL3/SDL_main.h>
 
 USING_NS_BF;
 
 ///
 
-#pragma comment(lib, "imm32.lib")
-#pragma comment(lib, "version.lib")
+// #pragma comment(lib, "imm32.lib")
+// #pragma comment(lib, "version.lib")
 
-SDL_Window* (SDLCALL* bf_SDL_CreateWindow)(const char* title, int x, int y, int w, int h, Uint32 flags);
-int (SDLCALL* bf_SDL_GL_SetAttribute)(SDL_GLattr attr, int value);
-Uint32 (SDLCALL* bf_SDL_GetWindowID)(SDL_Window* window);
-void (SDLCALL* bf_SDL_DestroyWindow)(SDL_Window* window);
-int (SDLCALL* bf_SDL_Init)(Uint32 flags);
-void (SDLCALL* bf_SDL_GetWindowPosition)(SDL_Window* window,int* x, int* y);
-char* (SDLCALL* bf_SDL_GetClipboardText)(void);
-int (SDLCALL* bf_SDL_SetClipboardText)(const char* text);
-void* (SDLCALL* bf_SDL_GL_GetProcAddress)(const char* proc);
-void (SDLCALL* bf_SDL_GetWindowSize)(SDL_Window* window, int* w, int* h);
-void (SDLCALL* bf_SDL_GL_SwapWindow)(SDL_Window* window);
-void (SDLCALL* bf_SDL_free)(void* mem);
-void (SDLCALL* bf_SDL_SetWindowPosition)(SDL_Window* window, int x, int y);
-int (SDLCALL* bf_SDL_PollEvent)(SDL_Event* event);
-const char* (SDLCALL* bf_SDL_GetError)(void);
-SDL_GLContext (SDLCALL* bf_SDL_GL_CreateContext)(SDL_Window* window);
-void (SDLCALL* bf_SDL_Quit)(void);
+// SDL_Window* (SDLCALL* bf_SDL_CreateWindow)(const char* title, int x, int y, int w, int h, Uint32 flags);
+// int (SDLCALL* bf_SDL_GL_SetAttribute)(SDL_GLattr attr, int value);
+// Uint32 (SDLCALL* bf_SDL_GetWindowID)(SDL_Window* window);
+// void (SDLCALL* bf_SDL_DestroyWindow)(SDL_Window* window);
+// int (SDLCALL* bf_SDL_Init)(Uint32 flags);
+// void (SDLCALL* bf_SDL_GetWindowPosition)(SDL_Window* window,int* x, int* y);
+// char* (SDLCALL* bf_SDL_GetClipboardText)(void);
+// int (SDLCALL* bf_SDL_SetClipboardText)(const char* text);
+// void* (SDLCALL* bf_SDL_GL_GetProcAddress)(const char* proc);
+// void (SDLCALL* bf_SDL_GetWindowSize)(SDL_Window* window, int* w, int* h);
+// void (SDLCALL* bf_SDL_GL_SwapWindow)(SDL_Window* window);
+// void (SDLCALL* bf_SDL_free)(void* mem);
+// void (SDLCALL* bf_SDL_SetWindowPosition)(SDL_Window* window, int x, int y);
+// int (SDLCALL* bf_SDL_PollEvent)(SDL_Event* event);
+// const char* (SDLCALL* bf_SDL_GetError)(void);
+// SDL_GLContext (SDLCALL* bf_SDL_GL_CreateContext)(SDL_Window* window);
+// void (SDLCALL* bf_SDL_Quit)(void);
 
-static HMODULE gSDLModule;
+// static HMODULE gSDLModule;
 
-static HMODULE GetSDLModule(const StringImpl& installDir)
-{
-	if (gSDLModule == NULL)
-	{
-		String loadPath = installDir + "SDL2.dll";
-		gSDLModule = ::LoadLibraryA(loadPath.c_str());
-		if (gSDLModule == NULL)
-		{
-#ifdef BF_PLATFORM_WINDOWS
-			::MessageBoxA(NULL, "Failed to load SDL2.dll", "FATAL ERROR", MB_OK | MB_ICONERROR);
-			::ExitProcess(1);
-#endif
-			BF_FATAL("Failed to load SDL2.dll");
-		}
-	}
-	return gSDLModule;
-}
+// static HMODULE GetSDLModule(const StringImpl& installDir)
+// {
+// 	if (gSDLModule == NULL)
+// 	{
+// 		String loadPath = installDir + "SDL2.dll";
+// 		gSDLModule = ::LoadLibraryA(loadPath.c_str());
+// 		if (gSDLModule == NULL)
+// 		{
+// #ifdef BF_PLATFORM_WINDOWS
+// 			::MessageBoxA(NULL, "Failed to load SDL2.dll", "FATAL ERROR", MB_OK | MB_ICONERROR);
+// 			::ExitProcess(1);
+// #endif
+// 			BF_FATAL("Failed to load SDL2.dll");
+// 		}
+// 	}
+// 	return gSDLModule;
+// }
 
-template <typename T>
-static void BFGetSDLProc(T& proc, const char* name, const StringImpl& installDir)
-{
-	proc = (T)::GetProcAddress(GetSDLModule(installDir), name);
-}
+// template <typename T>
+// static void BFGetSDLProc(T& proc, const char* name, const StringImpl& installDir)
+// {
+// 	proc = (T)::GetProcAddress(GetSDLModule(installDir), name);
+// }
 
-#define BF_GET_SDLPROC(name) BFGetSDLProc(bf_##name, #name, mInstallDir)
+// #define BF_GET_SDLPROC(name) BFGetSDLProc(bf_##name, #name, mInstallDir)
 
 SdlBFWindow::SdlBFWindow(BFWindow* parent, const StringImpl& title, int x, int y, int width, int height, int windowFlags)
 {
@@ -64,19 +66,20 @@ SdlBFWindow::SdlBFWindow(BFWindow* parent, const StringImpl& title, int x, int y
 	sdlWindowFlags |= SDL_WINDOW_OPENGL;
 	if (windowFlags & BFWINDOW_FULLSCREEN)
 		sdlWindowFlags |= SDL_WINDOW_FULLSCREEN;
+
 #ifdef BF_PLATFORM_FULLSCREEN
     sdlWindowFlags |= SDL_WINDOW_FULLSCREEN;
 #endif
 
-	mSDLWindow = bf_SDL_CreateWindow(title.c_str(), x, y, width, height, sdlWindowFlags);
+    mSDLWindow = SDL_CreateWindow(title.c_str(), width, height, sdlWindowFlags);
 
-#ifndef BF_PLATFORM_OPENGL_ES2
-	bf_SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-	bf_SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
-	bf_SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-#endif
+    // #ifndef BF_PLATFORM_OPENGL_ES2
+    // 	bf_SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    // 	bf_SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 2);
+    // 	bf_SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
+    // #endifS
 
-	if (!bf_SDL_GL_CreateContext(mSDLWindow))
+    if (!bf_SDL_GL_CreateContext(mSDLWindow))
 	{
 		String str = StrFormat(
 #ifdef BF_PLATFORM_OPENGL_ES2
@@ -238,28 +241,28 @@ SdlBFApp::SdlBFApp()
 
     mInstallDir += "/";
 
-	if (bf_SDL_CreateWindow == NULL)
-	{
-		BF_GET_SDLPROC(SDL_CreateWindow);
-		BF_GET_SDLPROC(SDL_GL_SetAttribute);
-		BF_GET_SDLPROC(SDL_GetWindowID);
-		BF_GET_SDLPROC(SDL_DestroyWindow);
-		BF_GET_SDLPROC(SDL_Init);
-		BF_GET_SDLPROC(SDL_GetWindowPosition);
-		BF_GET_SDLPROC(SDL_GetClipboardText);
-		BF_GET_SDLPROC(SDL_SetClipboardText);
-		BF_GET_SDLPROC(SDL_GL_GetProcAddress);
-		BF_GET_SDLPROC(SDL_GetWindowSize);
-		BF_GET_SDLPROC(SDL_GL_SwapWindow);
-		BF_GET_SDLPROC(SDL_free);
-		BF_GET_SDLPROC(SDL_SetWindowPosition);
-		BF_GET_SDLPROC(SDL_PollEvent);
-		BF_GET_SDLPROC(SDL_GetError);
-		BF_GET_SDLPROC(SDL_GL_CreateContext);
-		BF_GET_SDLPROC(SDL_Quit);
-	}
+    // if (bf_SDL_CreateWindow == NULL)
+    // {
+    // 	BF_GET_SDLPROC(SDL_CreateWindow);
+    // 	BF_GET_SDLPROC(SDL_GL_SetAttribute);
+    // 	BF_GET_SDLPROC(SDL_GetWindowID);
+    // 	BF_GET_SDLPROC(SDL_DestroyWindow);
+    // 	BF_GET_SDLPROC(SDL_Init);
+    // 	BF_GET_SDLPROC(SDL_GetWindowPosition);
+    // 	BF_GET_SDLPROC(SDL_GetClipboardText);
+    // 	BF_GET_SDLPROC(SDL_SetClipboardText);
+    // 	BF_GET_SDLPROC(SDL_GL_GetProcAddress);
+    // 	BF_GET_SDLPROC(SDL_GetWindowSize);
+    // 	BF_GET_SDLPROC(SDL_GL_SwapWindow);
+    // 	BF_GET_SDLPROC(SDL_free);
+    // 	BF_GET_SDLPROC(SDL_SetWindowPosition);
+    // 	BF_GET_SDLPROC(SDL_PollEvent);
+    // 	BF_GET_SDLPROC(SDL_GetError);
+    // 	BF_GET_SDLPROC(SDL_GL_CreateContext);
+    // 	BF_GET_SDLPROC(SDL_Quit);
+    // }
 
-	mDataDir = mInstallDir;
+    mDataDir = mInstallDir;
 
 	if (bf_SDL_Init(SDL_INIT_VIDEO | SDL_INIT_GAMECONTROLLER) < 0)
 		BF_FATAL(StrFormat("Unable to initialize SDL: %s", bf_SDL_GetError()).c_str());

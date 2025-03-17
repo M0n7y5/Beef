@@ -85,9 +85,8 @@ bool Thread::JoinInternal(int millisecondsTimeout)
 	return success;
 }
 
-void Thread::SleepInternal(int millisecondsTimeout)
-{
-	BfpThread_Sleep(millisecondsTimeout);
+void Thread::SleepInternal(int millisecondsTimeout) {
+    BfpThread_Sleep(millisecondsTimeout);
 }
 
 void Thread::SpinWaitInternal(int iterations)

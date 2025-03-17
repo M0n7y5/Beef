@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.5)
+cmake_minimum_required(VERSION 3.20)
 
 ################### Variables. ####################
 # Change if you want modify path or other values. #
@@ -168,20 +168,14 @@ file(GLOB SRC_FILES
     Backend/BeModule.cpp
 )
 
-find_package(LLVM 18.1 CONFIG COMPONENTS)
+find_package(LLVM "18.1" CONFIG COMPONENTS)
 
-if (LLVM_FOUND)
-  message(STATUS "Found LLVM ${LLVM_PACKAGE_VERSION}")
-  message(STATUS "Using LLVMConfig.cmake in: ${LLVM_DIR}")
+include_directories(${LLVM_INCLUDE_DIRS})
+add_definitions(${LLVM_DEFINITIONS})
 
-  include_directories(${LLVM_INCLUDE_DIRS})
-  add_definitions(${LLVM_DEFINITIONS})
+string(APPEND TARGET_LIBS_OS "-lLLVM-18 ${LLVM_SYSTEM_LIBS}")
+string(STRIP ${TARGET_LIBS_OS} TARGET_LIBS_OS)
 
-  string(APPEND TARGET_LIBS_OS "-lLLVM-18 ${LLVM_SYSTEM_LIBS}")
-  string(STRIP ${TARGET_LIBS_OS} TARGET_LIBS_OS)
-else()
-  message(FATAL_ERROR "LLVM not found")
-endif()
 
 # Add library to build.
 add_library(${PROJECT_NAME} STATIC
