@@ -439,6 +439,20 @@ public:
 	}
 };
 
+class BeTypeOfConstant : public BeConstant
+{
+public:
+	BE_VALUE_TYPE(BeTypeOfConstant, BeConstant);
+
+	int mBfTypeId;
+
+	virtual void HashContent(BeHashContext& hashCtx) override
+	{		
+		hashCtx.Mixin(TypeId);
+		hashCtx.Mixin(mBfTypeId);
+	}
+};
+
 class BeStringConstant : public BeConstant
 {
 public:
@@ -874,6 +888,7 @@ enum BeCmpKind
 	BeCmpKind_OGE,
 	BeCmpKind_NB,
 	BeCmpKind_NO,
+	BeCmpKind_Sign,
 };
 
 class BeCmpInst : public BeInst

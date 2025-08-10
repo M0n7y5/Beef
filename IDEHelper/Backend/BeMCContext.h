@@ -918,9 +918,10 @@ enum BeMCInstForm
 	BeMCInstForm_R32,
 	BeMCInstForm_R64,
 
+	// FRM32 = float, FRM64 = double
 	BeMCInstForm_XMM32_IMM,
 	BeMCInstForm_XMM64_IMM,
-	BeMCInstForm_XMM32_FRM32,
+	BeMCInstForm_XMM32_FRM32, 
 	BeMCInstForm_XMM64_FRM32,
 	BeMCInstForm_XMM32_FRM64,
 	BeMCInstForm_XMM64_FRM64,
@@ -1376,8 +1377,8 @@ public:
 	void RemoveInst(BeMCBlock* block, int instIdx, bool needChangesMerged = true, bool removeFromList = true);
 	BeMCOperand AllocBinaryOp(BeMCInstKind instKind, const BeMCOperand & lhs, const BeMCOperand & rhs, BeMCBinIdentityKind identityKind, BeMCOverflowCheckKind overflowCheckKind = BeMCOverflowCheckKind_None);
 	BeMCOperand GetCallArgVReg(int argIdx, BeTypeCode typeCode);
-	BeMCOperand CreateCall(const BeMCOperand& func, const SizedArrayImpl<BeMCOperand>& args, BeType* retType = NULL, BfIRCallingConv callingConv = BfIRCallingConv_CDecl, bool structRet = false, bool noReturn = false, bool isVarArg = false);
-	BeMCOperand CreateCall(const BeMCOperand& func, const SizedArrayImpl<BeValue*>& args, BeType* retType = NULL, BfIRCallingConv callingConv = BfIRCallingConv_CDecl, bool structRet = false, bool noReturn = false, bool isVarArg = false);
+	BeMCOperand CreateCall(const BeMCOperand& func, const SizedArrayImpl<BeMCOperand>& args, BeType* retType = NULL, BfIRCallingConv callingConv = BfIRCallingConv_CDecl, bool structRet = false, bool noReturn = false, int varArgStart = -1);
+	BeMCOperand CreateCall(const BeMCOperand& func, const SizedArrayImpl<BeValue*>& args, BeType* retType = NULL, BfIRCallingConv callingConv = BfIRCallingConv_CDecl, bool structRet = false, bool noReturn = false, int varArgStart = -1);
 	BeMCOperand CreateLoad(const BeMCOperand& mcTarget);
 	void CreateStore(BeMCInstKind instKind, const BeMCOperand& val, const BeMCOperand& ptr);
 	void CreateMemSet(const BeMCOperand& addr, uint8 val, int size, int align);
@@ -1432,6 +1433,7 @@ public:
 	X64CPURegister ResizeRegister(X64CPURegister reg, int numBits);
 	X64CPURegister ResizeRegister(X64CPURegister reg, BeType* type);
 	X64CPURegister GetFullRegister(X64CPURegister reg);
+	bool HasLoad(const BeMCOperand& operand);
 	bool IsAddress(BeMCOperand& operand);
 	bool IsAddressable(BeMCOperand& operand);
 	bool IsVRegExpr(BeMCOperand& operand);
@@ -1439,11 +1441,12 @@ public:
 	BeMCOperand GetFixedOperand(const BeMCOperand& operand);
 	uint8 GetREX(const BeMCOperand& op0, const BeMCOperand& op1, bool is64Bit);
 	void EmitREX(const BeMCOperand& op0, const BeMCOperand& op1, bool is64Bit);
-
+	
 	uint8 EncodeRegNum(X64CPURegister regNum);
 	int GetRegSize(int regNum);
 	void ValidateRMResult(const BeMCOperand& operand, BeRMParamsInfo& rmInfo, bool doValidate = true);
 	void GetRMParams(const BeMCOperand& operand, BeRMParamsInfo& rmInfo, bool doValidate = true);
+	bool HasImmediateTarget(const BeMCOperand& operand);
 	void DisableRegister(const BeMCOperand& operand, X64CPURegister reg);
 	void MarkInvalidRMRegs(const BeMCOperand& operand);
 	void GetUsedRegs(const BeMCOperand& operand, X64CPURegister& regA, X64CPURegister& regB); // Expands regs

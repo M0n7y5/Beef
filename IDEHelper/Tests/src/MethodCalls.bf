@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Numerics;
 
 namespace Tests
 {
@@ -217,6 +218,46 @@ namespace Tests
 			return span[0];
 		}
 
+		public static float GetFirstFloat(float[3] fVals)
+		{
+			return fVals[0];
+		}
+
+		public static float GetFirstFloatRef(ref float[3] fVals)
+		{
+			return fVals[0];
+		}
+
+		static int IntTest(int16 a)
+		{
+			return 1;
+		}
+
+		static int IntTest(int32 a)
+		{
+			return 2;
+		}
+
+		static int IntTest(int a)
+		{
+			return 3;
+		}
+
+		static int IntTest2(int a)
+		{
+			return 3;
+		}
+
+		static int IntTest2(int32 a)
+		{
+			return 2;
+		}
+
+		static int IntTest2(int16 a)
+		{
+			return 1;
+		}
+
 		[Test]
 		public static void TestBasics()
 		{
@@ -290,6 +331,31 @@ namespace Tests
 			fList.Add(1.2f);
 			Test.Assert(ParamsTest(params fList) == 1.2f);
 			Test.Assert(ParamsTest2(params fList) == 1.2f);
+
+			float4 fVals = .(123, 234, 345, 456);
+			Test.Assert(GetFirstFloat(*(.)&fVals) == 123);
+			Test.Assert(GetFirstFloatRef(ref *(.)&fVals) == 123);
+
+			const int i = 1;
+			const int16 i16 = 1;
+			const int32 i32 = 1;
+			Test.Assert(IntTest(i16) == 1);
+			Test.Assert(IntTest(-43) == 1);
+			Test.Assert(IntTest(i32) == 2);
+			Test.Assert(IntTest((int32)(-43)) == 2);
+			Test.Assert(IntTest((int32)-43) == 2);
+			Test.Assert(IntTest(i) == 3);
+			Test.Assert(IntTest((int)(-43)) == 3);
+			Test.Assert(IntTest((int)-43) == 3);
+
+			Test.Assert(IntTest2(i16) == 1);
+			Test.Assert(IntTest2(-43) == 1);
+			Test.Assert(IntTest2(i32) == 2);
+			Test.Assert(IntTest2((int32)(-43)) == 2);
+			Test.Assert(IntTest2((int32)-43) == 2);
+			Test.Assert(IntTest2(i) == 3);
+			Test.Assert(IntTest2((int)(-43)) == 3);
+			Test.Assert(IntTest2((int)-43) == 3);
 		}
 	}
 }

@@ -1457,6 +1457,13 @@ void BeDumpContext::ToString(StringImpl& str, BeValue* value, bool showType, boo
 		return;
 	}
 
+	if (auto constant = BeValueDynCast<BeTypeOfConstant>(value))
+	{
+		ToString(str, constant->GetType());
+		str += StrFormat(" typeof(%d)", constant->mBfTypeId);
+		return;
+	}
+
 	if (auto constant = BeValueDynCast<BeStringConstant>(value))
 	{
 		ToString(str, constant->GetType());
@@ -1740,6 +1747,7 @@ void BeDumpContext::ToString(StringImpl& str, BeCmpKind cmpKind)
 	case BeCmpKind_OGE: str += "oge"; return;
 	case BeCmpKind_NB: str += "nb"; return;
 	case BeCmpKind_NO: str += "no"; return;
+	case BeCmpKind_Sign: str += "sign"; return;
 	default:
 		str += "???";
 	}

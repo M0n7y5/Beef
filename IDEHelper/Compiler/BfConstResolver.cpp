@@ -167,7 +167,10 @@ BfTypedValue BfConstResolver::Resolve(BfExpression* expr, BfType* wantType, BfCo
 		}
 		else
 		{
-			mResult = mModule->Cast(expr, mResult, wantType, (BfCastFlags)(BfCastFlags_WantsConst | BfCastFlags_NoConversionOperator | (explicitCast ? BfCastFlags_Explicit : BfCastFlags_None)));
+			BfCastFlags castFlags = (BfCastFlags)(BfCastFlags_WantsConst | (explicitCast ? BfCastFlags_Explicit : BfCastFlags_None));
+			if ((flags & BfConstResolveFlag_NoConversionOperator) != 0)
+				castFlags = (BfCastFlags)(castFlags | BfCastFlags_NoConversionOperator);
+			mResult = mModule->Cast(expr, mResult, wantType, castFlags);
 		}
 	}
 
@@ -184,7 +187,13 @@ BfTypedValue BfConstResolver::Resolve(BfExpression* expr, BfType* wantType, BfCo
 		if (isConst)
 		{
 			auto constant = mModule->mBfIRBuilder->GetConstant(mResult.mValue);
-			if ((constant->mConstType == BfConstType_GlobalVar) && ((flags & BfConstResolveFlag_AllowGlobalVariable) == 0))
+
+			if ((constant->mTypeCode != BfTypeCode_StringId) && (mModule->HasStringId(mResult.mValue, mModule->mBfIRBuilder)))
+			{
+				mModule->Fail("Invalid usage of string constant", expr);				
+				mResult = BfTypedValue();
+			}
+			else if ((constant->mConstType == BfConstType_GlobalVar) && ((flags & BfConstResolveFlag_AllowGlobalVariable) == 0))
 			{
 				int stringId = mModule->GetStringPoolIdx(mResult.mValue, mModule->mBfIRBuilder);
 				if (stringId != -1)
@@ -193,7 +202,7 @@ BfTypedValue BfConstResolver::Resolve(BfExpression* expr, BfType* wantType, BfCo
 				}
 				else
 					isConst = false;
-			}
+			}			
 		}
 
 		if ((!isConst) && ((mBfEvalExprFlags & BfEvalExprFlags_AllowNonConst) == 0))
@@ -225,7 +234,8 @@ BfTypedValue BfConstResolver::Resolve(BfExpression* expr, BfType* wantType, BfCo
 
 	if ((flags & BfConstResolveFlag_NoActualizeValues) == 0)
 	{
-		prevIgnoreWrites.Restore();
+		if (mModule->mBfIRBuilder->mHasStarted)
+			prevIgnoreWrites.Restore();
 		mModule->FixValueActualization(mResult, !prevIgnoreWrites.mPrevVal || ((flags & BfConstResolveFlag_ActualizeValues) != 0));
 	}
 
@@ -305,7 +315,7 @@ bool BfConstResolver::PrepareMethodArguments(BfAstNode* targetSrc, BfMethodMatch
 						isDirectPass = true;
 				}
 
-				if (!isDirectPass)
+				if ((!isDirectPass) && (wantType->IsArray()))
 				{
 					BfArrayType* arrayType = (BfArrayType*)wantType;
 					if (arrayType->IsIncomplete())
@@ -393,7 +403,7 @@ bool BfConstResolver::PrepareMethodArguments(BfAstNode* targetSrc, BfMethodMatch
 
 		if (argExpr != NULL)
 		{
-			argValue = mModule->Cast(argExpr, argValue, wantType, (BfCastFlags)(BfCastFlags_WantsConst | BfCastFlags_NoConversionOperator));
+			argValue = mModule->Cast(argExpr, argValue, wantType, (BfCastFlags)(BfCastFlags_WantsConst));
 			if (!argValue)
 				return false;
 		}
@@ -415,7 +425,7 @@ bool BfConstResolver::PrepareMethodArguments(BfAstNode* targetSrc, BfMethodMatch
 			if ((mModule->mCurMethodInstance == NULL) || (mModule->mCurMethodInstance->mMethodDef->mMethodType != BfMethodType_Mixin))
 				requiresConst = true;
 
-			if ((requiresConst) && (argValue.mValue.IsFake()) && (!argValue.mType->IsValuelessType()))
+			if ((requiresConst) && (!mModule->mBfIRBuilder->IsConstValue(argValue.mValue)) && (!argValue.mType->IsValuelessType()))
 			{
 				mModule->Fail("Expression does not evaluate to a constant value", argExpr);
 			}

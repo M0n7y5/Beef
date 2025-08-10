@@ -95,6 +95,8 @@ class GitManager
 				if (!File.Exists(gitPath))
 					gitPath.Clear();
 			}
+
+			psi.UseShellExecute = false;
 #endif
 			if (gitPath.IsEmpty)
 				gitPath.Set("git");
@@ -103,7 +105,6 @@ class GitManager
 			psi.SetArguments(mArgs);
 			if (mPath != null)
 				psi.SetWorkingDirectory(mPath);
-			psi.UseShellExecute = false;
 			psi.RedirectStandardError = true;
 			psi.RedirectStandardOutput = true;
 			psi.CreateNoWindow = true;
@@ -257,7 +258,11 @@ class GitManager
 			if (mProcess.WaitFor(0))
 			{
 				if (mProcess.ExitCode != 0)
+				{
+					if (gApp.mVerbosity >= .Diagnostic)
+						gApp.OutputLine($"Git failed with Exit Code:{mProcess.ExitCode} Args:{mArgs} Path:{mPath}");
 					mFailed = true;
+				}
 				mDone = true;
 			}
 		}
@@ -308,6 +313,11 @@ class GitManager
 	public GitInstance Clone(StringView url, StringView path)
 	{
 		return StartGit(scope $"clone -v --progress --recurse-submodules {url} \"{path}\"");
+	}
+
+	public GitInstance CloneShallow(StringView url, StringView path, StringView hash)
+	{
+		return StartGit(scope $"clone -v --progress --recurse-submodules --shallow-submodules --revision={hash} --depth 1 {url} \"{path}\"");
 	}
 
 	public GitInstance Checkout(StringView path, StringView hash)

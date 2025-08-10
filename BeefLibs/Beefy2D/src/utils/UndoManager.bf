@@ -138,8 +138,46 @@ namespace Beefy.utils
 			mCurCost = 0;
         }
 
+		bool TryMerge(UndoAction action)
+		{
+			var currentBatchEnd = action as UndoBatchEnd;
+			if (currentBatchEnd == null)
+				return false;
+
+			var currentBatchStart = currentBatchEnd.mBatchStart as UndoBatchStart;
+			var prevBatchEndIdx = mUndoList.IndexOf(currentBatchStart) - 1;
+			if (prevBatchEndIdx <= 0)
+				return false;
+
+			var prevBatchEnd = mUndoList[prevBatchEndIdx] as UndoBatchEnd;
+			if (prevBatchEnd == null)
+				return false;
+
+			var prevBatchStart = prevBatchEnd.mBatchStart as UndoBatchStart;
+			if (prevBatchStart == null)
+				return false;
+			if (prevBatchStart.Merge(currentBatchStart) == false)
+				return false;
+
+			mUndoList.Remove(currentBatchStart);
+			mUndoList.Remove(currentBatchEnd);
+
+			mUndoList.Remove(prevBatchEnd);
+			mUndoList.Add(prevBatchEnd);
+
+			delete currentBatchStart;
+			delete currentBatchEnd;
+
+			mUndoIdx = (.)mUndoList.Count;
+
+			return true;
+		}
+
         public void Add(UndoAction action, bool allowMerge = true)
         {
+			if ((allowMerge) && (TryMerge(action)))
+				return;
+
 			if (mFreezeDeletes == 0)
 				mCurCost += action.GetCost();
 			if (action is IUndoBatchStart)
@@ -277,6 +315,31 @@ namespace Beefy.utils
             mUndoIdx--;
             return true;
         }
+
+		public void PreUndo(delegate void (UndoAction) dlg)
+		{
+			int undoIdx = mUndoIdx;
+			if (undoIdx == 0)
+			    return;
+
+			var undoAction = mUndoList[undoIdx - 1];
+			if (IUndoBatchEnd undoBatchEnd = undoAction as IUndoBatchEnd)
+			{
+			    while (true)
+			    {
+					dlg(undoAction);
+			        if (undoIdx == 0)
+			            return;
+			        undoIdx--;
+			        if ((undoAction == undoBatchEnd.BatchStart) || (undoIdx == 0))
+			            return;
+			        undoAction = mUndoList[undoIdx - 1];
+			    }
+			}
+
+			dlg(undoAction);
+			undoIdx--;
+		}
 
         public bool Redo()
         {

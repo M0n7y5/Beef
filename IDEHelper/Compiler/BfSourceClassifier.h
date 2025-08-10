@@ -12,8 +12,11 @@ enum BfSourceElementType
 	BfSourceElementType_Normal,
 	BfSourceElementType_Keyword,
 	BfSourceElementType_Literal,
-	BfSourceElementType_Identifier,
 	BfSourceElementType_Comment,
+	BfSourceElementType_Identifier,	
+	BfSourceElementType_Local,
+	BfSourceElementType_Parameter,
+	BfSourceElementType_Member,
 	BfSourceElementType_Method,
 	BfSourceElementType_Type,
 	BfSourceElementType_PrimitiveType,
@@ -66,6 +69,7 @@ public:
 	bool mSkipAttributes;
 	bool mIsSideChannel;
 	bool mPreserveFlags;
+	bool mSkipAnonymousTypes;
 	uint8 mClassifierPassId;
 	BfAstNode* mPrevNode;
 	BfAstNode* mCurMember;
@@ -115,10 +119,13 @@ public:
 	virtual void Visit(BfNamedTypeReference* typeRef) override;
 	virtual void Visit(BfTagTypeRef* typeRef) override;
 	virtual void Visit(BfGenericInstanceTypeRef* typeRef) override;
-	virtual void Visit(BfLocalMethodDeclaration * methodDecl) override;
+	virtual void Visit(BfVariableDeclaration* varDecl) override;
+	virtual void Visit(BfLambdaBindExpression* lambdaBindExpr) override;
+	virtual void Visit(BfLocalMethodDeclaration* methodDecl) override;
 	virtual void Visit(BfLiteralExpression* literalExpr) override;
 	virtual void Visit(BfStringInterpolationExpression* stringInterpolationExpression) override;
 	virtual void Visit(BfTokenNode* tokenNode) override;
+	virtual void Visit(BfCaseExpression* caseExpr) override;
 	virtual void Visit(BfInvocationExpression* invocationExpr) override;
 	virtual void Visit(BfIndexerExpression* indexerExpr) override;
 	virtual void Visit(BfConstructorDeclaration* ctorDeclaration) override;
