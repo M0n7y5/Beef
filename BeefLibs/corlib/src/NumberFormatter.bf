@@ -1018,7 +1018,8 @@ namespace System
 		static char8[] sEmtpyBuf = new char8[0] ~ delete _;
 
 		//part of the private stringbuffer
-		private char8[] _cbuf ~ if (_cbuf.Count > 0) delete _;
+		private char8[] _cbuf ~ if (cbufOnHeap) delete _;
+		private bool cbufOnHeap;
 		private int32 mBufSize;
 
 		private bool _NaN;
@@ -1466,21 +1467,21 @@ namespace System
 			_ind = 0;
 			if (_cbuf.Count < size)
 			{
-				if (_cbuf.Count > 0)
+				if (cbufOnHeap)
 					delete _cbuf;
 				_cbuf = new char8 [size];
+				cbufOnHeap = true;
 			}
 		}
 
 		private void Resize (int len)
 		{
-			//Array.Resize(ref _cbuf, len);
-
 			char8[] newBuf = new char8[len];
 			Array.Copy(_cbuf, 0, newBuf, 0, _cbuf.Count);
-			if (_cbuf.Count > 0)
+			if (cbufOnHeap)
 				delete _cbuf;
 			_cbuf = newBuf;
+			cbufOnHeap = true;
 		}
 
 		private void Append (char8 c)
@@ -1705,40 +1706,34 @@ namespace System
 
 		#region public number formatting methods
 
-		/*[ThreadStatic]
-		static NumberFormatter threadNumberFormatter;
+		static LazyTLS<NumberFormatter> threadNumberFormatter = new .(
+			new () => new NumberFormatter(CultureInfo.CurrentCulture),
+			new (nf) => { delete nf; }) ~ delete _;
+
+		static LazyTLS<NumberFormatter> userNumberFormatter = new .(
+			new () => new NumberFormatter(null),
+			new (nf) => { delete nf; }) ~ delete _;
 
 		[ThreadStatic]
-		static NumberFormatter userFormatProvider;*/
+		static NumberFormatter userFormatProvider;
 
-		private static mixin GetInstance(IFormatProvider fp)
+		private static NumberFormatter GetInstance(IFormatProvider fp)
 		{
-			/*if (fp != null) {
-				if (userFormatProvider == null) {
-					Interlocked.CompareExchange (ref userFormatProvider, new NumberFormatter (null), null);
-				}
-
-				return userFormatProvider;
-			}*/
-
-			NumberFormatter nf;
-
 			if (fp != null)
-				nf = scope:mixin NumberFormatter(null);
+			{
+				return userNumberFormatter.Value;
+			}
 			else
-				nf = scope:mixin NumberFormatter(CultureInfo.CurrentCulture);
-
-			/*NumberFormatter res = threadNumberFormatter;
-			threadNumberFormatter = null;
-			if (res == null)
-				return new NumberFormatter (Thread.CurrentThread);
-			res.CurrentCulture = Thread.CurrentThread.CurrentCulture;*/
-			nf
+			{
+				var nf = threadNumberFormatter.Value;
+				nf.CurrentCulture = CultureInfo.CurrentCulture;
+				return nf;
+			}
 		}
 
 		public static void NumberToString (StringView format, uint32 value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value, UInt32DefPrecision);
 			inst.IntegerToString(format, fp, outString);
 		}
@@ -1770,28 +1765,28 @@ namespace System
 
 		public static void NumberToString (StringView format, int32 value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value, Int32DefPrecision);
 			inst.IntegerToString (format, fp, outString);
 		}
 
 		public static void NumberToString (StringView format, uint64 value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value);
 			inst.IntegerToString (format, fp, outString);
 		}
 
 		public static void NumberToString (StringView format, int64 value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value);
 			inst.IntegerToString (format, fp, outString);
 		}
 
 		public static void NumberToString (StringView format, float value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value, SingleDefPrecision);
 			NumberFormatInfo nfi = inst.GetNumberFormatInstance(fp);
 			if (inst._NaN)
@@ -1809,7 +1804,7 @@ namespace System
 
 		public static void NumberToString (StringView format, double value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value, DoubleDefPrecision);
 			NumberFormatInfo nfi = inst.GetNumberFormatInstance(fp);
 			if (inst._NaN)
@@ -1827,7 +1822,7 @@ namespace System
 
 		/*public static void NumberToString (string format, decimal value, IFormatProvider fp, String outString)
 		{
-			NumberFormatter inst = GetInstance!(fp);
+			NumberFormatter inst = GetInstance(fp);
 			inst.Init (format, value);
 			string res = inst.NumberToString (format, inst.GetNumberFormatInstance (fp));
 			inst.Release();
@@ -3196,3 +3191,4 @@ namespace System
 		#endregion
 	}
 }
+

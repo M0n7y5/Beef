@@ -4036,6 +4036,9 @@ addr_ce CeContext::GetReflectType(int typeId)
 	BfCreateTypeDataContext createTypeDataCtx;
 	auto irData = ceModule->CreateTypeData(bfType, createTypeDataCtx, true, true, true, false);
 
+	if (mCeMachine->mCeModule->mBfIRBuilder->mBeIRCodeGen->mFailed)
+		return 0;
+
 	BeValue* beValue = NULL;
 	if (auto constant = mCeMachine->mCeModule->mBfIRBuilder->GetConstant(irData))
 	{
@@ -7183,7 +7186,7 @@ bool CeContext::Execute(CeFunction* startFunction, uint8* startStackPtr, uint8* 
 				if (endAddr != 0)
 				{
 					CE_CHECKADDR(endAddr, ptrSize);
-					CeSetAddrVal(endPtr, (uint8*)endPtr - memStart, ptrSize);
+					CeSetAddrVal(endPtr, (uint8*)*endPtr - memStart, ptrSize);
 				}
 			}
 			else if (checkFunction->mFunctionKind == CeFunctionKind_Double_Ftoa)

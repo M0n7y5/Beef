@@ -2732,6 +2732,15 @@ bool BfTypeInstance::HasVarConstraints()
 
 bool BfTypeInstance::IsTypeMemberIncluded(BfTypeDef* typeDef, BfTypeDef* activeTypeDef, BfModule* module)
 {
+	if (IsBoxed())
+	{
+		auto boxedType = (BfBoxedType*)this;		
+		auto unboxedTypeInst = boxedType->mElementType->ToTypeInstance();
+		if (unboxedTypeInst != NULL)
+			return unboxedTypeInst->IsTypeMemberIncluded(typeDef, activeTypeDef, module);
+		return false;
+	}
+
 	if (mGenericTypeInfo == NULL)
 		return true;
 	if (mGenericTypeInfo->mGenericExtensionInfo == NULL)
@@ -3610,7 +3619,7 @@ void BfResolvedTypeSet::HashGenericArguments(BfTypeReference* typeRef, LookupCon
 			int argHashVal = 0;
 			if (genericArgTypeRef != NULL)
 			{
-				argHashVal = Hash(genericArgTypeRef, ctx, BfHashFlag_AllowGenericParamConstValue, hashSeed + 1);
+				argHashVal = Hash(genericArgTypeRef, ctx, (BfHashFlags)(BfHashFlag_AllowGenericParamConstValue | BfHashFlag_DisallowUnknownSizedArray), hashSeed + 1);
 				if ((allowUnboundGeneric) && ((ctx->mResolveFlags & BfResolveTypeRefFlag_ForceUnboundGeneric) != 0))
 					genericArgTypeRef = NULL;
 			}
@@ -4029,9 +4038,13 @@ int BfResolvedTypeSet::DoHash(BfTypeReference* typeRef, LookupContext* ctx, BfHa
 					else if (constant->mConstType == BfConstType_Undef)
 					{
 						elementCount = -1; // Marker for undef
-						if ((arrayType->IsInferredSize()) && ((ctx->mResolveFlags & BfResolveTypeRefFlag_AllowInferredSizedArray) == 0))
-						{
+						if ((arrayType->IsInferredSize()) && 
+							(((ctx->mResolveFlags & BfResolveTypeRefFlag_AllowInferredSizedArray) == 0) ||
+							 ((flags & BfHashFlag_DisallowUnknownSizedArray) != 0)))
+						{							
 							ctx->mModule->Fail("Invalid use of inferred-sized array", sizeExpr);
+							if ((flags & BfHashFlag_DisallowUnknownSizedArray) != 0)
+								ctx->mFailed = true;
 						}
 					}
 					else if (!BfIRBuilder::IsInt(constant->mTypeCode))

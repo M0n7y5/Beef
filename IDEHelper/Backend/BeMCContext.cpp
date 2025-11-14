@@ -8488,7 +8488,8 @@ void BeMCContext::DoRegAssignPass()
 	}
 
 #ifdef _DEBUG
-	BF_ASSERT(mColorizer.Validate());
+	if (!mColorizer.Validate())
+		SoftFail("mColorizer.Validate failed");
 
 	for (int vregIdx = 0; vregIdx < (int)mVRegInfo.size(); vregIdx++)
 	{
@@ -10161,6 +10162,7 @@ bool BeMCContext::DoLegalization()
 							if ((vregInfo != NULL) && (vregInfo->mIsExpr))
 							{
 								ReplaceWithNewVReg(inst->mArg1, instIdx, true);
+								isFinalRun = false;
 							}
 						}
 
@@ -12434,8 +12436,17 @@ bool BeMCContext::EmitStdXMMInst(BeMCInstForm instForm, BeMCInst* inst, uint8 op
 	case BeMCInstForm_XMM64_FRM64:
 	case BeMCInstForm_XMM32_FRM64:
 		{
+			//cvttsd2si
 			auto arg0 = GetFixedOperand(inst->mArg0);
 			auto arg1 = GetFixedOperand(inst->mArg1);
+
+			if ((instForm == BeMCInstForm_R32_F64) && (arg0.IsNativeReg()))
+			{
+				// For xmm->uint32 conversions we need to do xmm->int64 and then truncate
+				arg0.mReg = ResizeRegister(arg0.mReg, 8);
+				is64Bit = true;
+			}
+
 			Emit(0xF2); EmitREX(arg0, arg1, is64Bit);
 			Emit(0x0F); Emit(opcode);
 			EmitModRM(arg0, arg1);
@@ -14118,11 +14129,62 @@ void BeMCContext::DoCodeEmission()
 					auto arg1Type = GetType(inst->mArg1);
 					switch (arg0Type->mTypeCode)
 					{
+					case BeTypeCode_Int8:
+						switch (arg1Type->mTypeCode)
+						{
+						case BeTypeCode_Float:
+							// CVTSS2SI							
+							{
+								BF_ASSERT(inst->mArg0.IsNativeReg());
+								BeMCOperand resizedArg0 = BeMCOperand::FromReg(ResizeRegister(inst->mArg0.mReg, 4));
+								Emit(0xF3); EmitREX(resizedArg0, inst->mArg1, false);
+								Emit(0x0F); Emit(0x2C);
+								EmitModRM(resizedArg0, inst->mArg1);
+							}
+							break;
+						case BeTypeCode_Double:
+							// cvttsd2si
+							{
+								BF_ASSERT(inst->mArg0.IsNativeReg());
+								BeMCOperand resizedArg0 = BeMCOperand::FromReg(ResizeRegister(inst->mArg0.mReg, 4));
+								Emit(0xF2); EmitREX(resizedArg0, inst->mArg1, false);
+								Emit(0x0F); Emit(0x2C);
+								EmitModRM(resizedArg0, inst->mArg1);
+							}
+							break;
+						default: NotImpl();
+						}
+						break;
 					case BeTypeCode_Int16:
-						BF_ASSERT(arg1Type->mTypeCode == BeTypeCode_Int8);
-						Emit(0x66);
-						EmitREX(inst->mArg0, inst->mArg1, false);
-						Emit(0x0F); Emit(0xBE); EmitModRM(inst->mArg0, inst->mArg1);
+						switch (arg1Type->mTypeCode)
+						{
+						case BeTypeCode_Float:
+							// CVTSS2SI							
+							{
+								BF_ASSERT(inst->mArg0.IsNativeReg());
+								BeMCOperand resizedArg0 = BeMCOperand::FromReg(ResizeRegister(inst->mArg0.mReg, 4));
+								Emit(0xF3); EmitREX(resizedArg0, inst->mArg1, false);
+								Emit(0x0F); Emit(0x2C);
+								EmitModRM(resizedArg0, inst->mArg1);
+							}
+							break;
+						case BeTypeCode_Double:
+							// cvttsd2si
+							{
+								BF_ASSERT(inst->mArg0.IsNativeReg());
+								BeMCOperand resizedArg0 = BeMCOperand::FromReg(ResizeRegister(inst->mArg0.mReg, 4));
+								Emit(0xF2); EmitREX(resizedArg0, inst->mArg1, false);
+								Emit(0x0F); Emit(0x2C);
+								EmitModRM(resizedArg0, inst->mArg1);
+							}
+							break;
+						default:
+							BF_ASSERT(arg1Type->mTypeCode == BeTypeCode_Int8);
+							Emit(0x66);
+							EmitREX(inst->mArg0, inst->mArg1, false);
+							Emit(0x0F); Emit(0xBE); EmitModRM(inst->mArg0, inst->mArg1);
+							break;
+						}
 						break;
 					case BeTypeCode_Int32:
 						switch (arg1Type->mTypeCode)
@@ -14138,6 +14200,12 @@ void BeMCContext::DoCodeEmission()
 						case BeTypeCode_Float:
 							// CVTSS2SI
 							Emit(0xF3); EmitREX(inst->mArg0, inst->mArg1, false);
+							Emit(0x0F); Emit(0x2C);
+							EmitModRM(inst->mArg0, inst->mArg1);
+							break;
+						case BeTypeCode_Double:
+							// cvttsd2si
+							Emit(0xF2); EmitREX(inst->mArg0, inst->mArg1, false);
 							Emit(0x0F); Emit(0x2C);
 							EmitModRM(inst->mArg0, inst->mArg1);
 							break;
@@ -14159,6 +14227,12 @@ void BeMCContext::DoCodeEmission()
 						case BeTypeCode_Float:
 							// CVTSS2SI
 							Emit(0xF3); EmitREX(inst->mArg0, inst->mArg1, true);
+							Emit(0x0F); Emit(0x2C);
+							EmitModRM(inst->mArg0, inst->mArg1);
+							break;
+						case BeTypeCode_Double:
+							// cvttsd2si
+							Emit(0xF2); EmitREX(inst->mArg0, inst->mArg1, true);
 							Emit(0x0F); Emit(0x2C);
 							EmitModRM(inst->mArg0, inst->mArg1);
 							break;
@@ -16651,6 +16725,8 @@ void BeMCContext::Generate(BeFunction* function)
 						{
 							bool doSignExtension = (toType->IsIntable()) && (fromType->IsIntable()) && (toType->mSize > fromType->mSize) && (castedInst->mToSigned) && (castedInst->mValSigned);
 							if ((toType->IsFloat()) && (fromType->IsIntable()) && (castedInst->mValSigned))
+								doSignExtension = true;
+							if ((toType->IsIntable()) && (fromType->IsFloat()) && (castedInst->mToSigned))
 								doSignExtension = true;
 
 							if (mcValue.IsImmediate())
