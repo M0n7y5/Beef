@@ -133,6 +133,7 @@ namespace System.FFI
 		BadTypeDef,
 		BadABI,
 		NoBeefCRT,
+		NoFFI
 	}
 
 #if BF_PLATFORM_WINDOWS
@@ -165,7 +166,7 @@ namespace System.FFI
 
 #else //!BF_PLATFORM_WINDOWS
 
-#if BF_64_BIT
+#if BF_64_BIT && !BF_MACHINE_AARCH64
 	[AllowDuplicates]
 	enum FFIABI : int32
 	{

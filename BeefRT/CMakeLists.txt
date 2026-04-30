@@ -55,7 +55,7 @@ if (${IOS})
     ../BeefySysLib/
     ../BeefySysLib/third_party
     ../BeefySysLib/third_party/freetype/include
-    ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/include
+    ../BeefySysLib/third_party/libffi/aarch64-apple-ios/include
     ../
     ../extern
     ../extern/llvm/include
@@ -70,7 +70,6 @@ elseif (${APPLE})
     ../BeefySysLib/
     ../BeefySysLib/third_party
     ../BeefySysLib/third_party/freetype/include
-    ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/include
     ../
     ../extern
     ../extern/llvm/include
@@ -79,6 +78,15 @@ elseif (${APPLE})
 
     ../BeefySysLib/platform/osx
   )
+  if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "arm64")
+    include_directories(
+      ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/include
+    )
+  else()
+    include_directories(
+      ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/include
+    )
+  endif()  
 elseif (${ANDROID})
   if (ANDROID_ABI STREQUAL "x86")
     include_directories(
@@ -147,7 +155,7 @@ else()
     ../BeefySysLib/
     ../BeefySysLib/third_party
     ../BeefySysLib/third_party/freetype/include
-    ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/include
+    ../BeefySysLib/third_party/libffi/${CMAKE_HOST_SYSTEM_PROCESSOR}-unknown-linux-gnu/include
     ../
     ../extern
     ../extern/llvm/include
@@ -232,17 +240,32 @@ if (${IOS})
     file(GLOB SRC_FILES_OS
         ../BeefySysLib/platform/darwin/BFPlatform.cpp
         ../BeefySysLib/platform/darwin/DarwinCommon.cpp
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/.libs/prep_cif.o
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/.libs/types.o
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/.libs/raw_api.o
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/.libs/java_raw_api.o
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/.libs/closures.o
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/aarch64/.libs/ffi.o
-        ../BeefySysLib/third_party/libffi/build_iphoneos-arm64/src/aarch64/.libs/sysv.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/prep_cif.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/types.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/raw_api.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/java_raw_api.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/closures.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/tramp.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/aarch64/ffi.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-ios/src/aarch64/sysv.o
     )
     # Simulator
     # src/prep_cif.o src/types.o src/raw_api.o src/java_raw_api.o src/closures.o src/x86/ffi64.o src/x86/unix64.o src/x86/ffiw64.o src/x86/win64.o
 elseif (${APPLE})
+  if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "arm64")
+    file(GLOB SRC_FILES_OS
+        ../BeefySysLib/platform/darwin/BFPlatform.cpp
+        ../BeefySysLib/platform/darwin/DarwinCommon.cpp
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/prep_cif.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/types.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/raw_api.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/java_raw_api.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/closures.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/tramp.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/aarch64/ffi.o
+        ../BeefySysLib/third_party/libffi/aarch64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/aarch64/sysv.o
+    )
+  else()
     file(GLOB SRC_FILES_OS
         ../BeefySysLib/platform/darwin/BFPlatform.cpp
         ../BeefySysLib/platform/darwin/DarwinCommon.cpp
@@ -251,27 +274,55 @@ elseif (${APPLE})
         ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/raw_api.o
         ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/java_raw_api.o
         ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/closures.o
+        ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/tramp.o
         ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/x86/ffi64.o
-        ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/x86/darwin64.o
+        ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/x86/unix64.o
+        ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/x86/ffiw64.o
+        ../BeefySysLib/third_party/libffi/x86_64-apple-darwin${CMAKE_HOST_SYSTEM_VERSION}/src/x86/win64.o
     )
+  endif()
 elseif (${ANDROID})
   file(GLOB SRC_FILES_OS
         ../BeefySysLib/platform/android/BFPlatform.cpp
         ../BeefySysLib/platform/android/AndroidCommon.cpp
     )
-elseif ((${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64") AND (NOT DEFINED BF_DISABLE_FFI))
-    file(GLOB SRC_FILES_OS
+elseif ((NOT DEFINED BF_DISABLE_FFI))
+    if(EXISTS "../BeefySysLib/third_party/libffi/${CMAKE_HOST_SYSTEM_PROCESSOR}-unknown-linux-gnu")
+      set(TARGET_TRIPLE_DIR "${CMAKE_HOST_SYSTEM_PROCESSOR}-unknown-linux-gnu")
+    elseif(EXISTS "../BeefySysLib/third_party/libffi/${CMAKE_HOST_SYSTEM_PROCESSOR}-pc-linux-gnu")
+      set(TARGET_TRIPLE_DIR "${CMAKE_HOST_SYSTEM_PROCESSOR}-pc-linux-gnu")
+    endif()
+
+    if (${CMAKE_HOST_SYSTEM_PROCESSOR} STREQUAL "x86_64")
+      file(GLOB SRC_FILES_OS
         ../BeefySysLib/platform/linux/BFPlatform.cpp
         ../BeefySysLib/platform/linux/LinuxCommon.cpp
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/prep_cif.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/types.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/raw_api.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/java_raw_api.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/closures.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/x86/ffi64.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/x86/unix64.o
-        ../BeefySysLib/third_party/libffi/x86_64-unknown-linux-gnu/src/x86/ffiw64.o        
-    )
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/prep_cif.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/types.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/raw_api.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/java_raw_api.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/closures.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/tramp.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/x86/ffi64.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/x86/unix64.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/x86/ffiw64.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/x86/win64.o
+      )
+    else()
+      file(GLOB SRC_FILES_OS
+        ../BeefySysLib/platform/linux/BFPlatform.cpp
+        ../BeefySysLib/platform/linux/LinuxCommon.cpp
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/prep_cif.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/types.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/raw_api.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/java_raw_api.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/closures.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/tramp.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/aarch64/ffi.o
+        ../BeefySysLib/third_party/libffi/${TARGET_TRIPLE_DIR}/src/aarch64/sysv.o
+      )
+    endif()
+
 else()
   file(GLOB SRC_FILES_OS
     ../BeefySysLib/platform/linux/BFPlatform.cpp

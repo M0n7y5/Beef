@@ -698,12 +698,16 @@ llvm::Type* BfIRCodeGen::GetLLVMType(BfTypeCode typeCode, bool& isSigned)
 		return llvm::Type::getDoubleTy(*mLLVMContext);
 	case BfTypeCode_Float2:
 		return llvm::FixedVectorType::get(llvm::Type::getFloatTy(*mLLVMContext), 2);
+	case BfTypeCode_FloatX1:
+		return llvm::ArrayType::get(llvm::Type::getFloatTy(*mLLVMContext), 1);
 	case BfTypeCode_FloatX2:
 		return llvm::ArrayType::get(llvm::Type::getFloatTy(*mLLVMContext), 2);
 	case BfTypeCode_FloatX3:
 		return llvm::ArrayType::get(llvm::Type::getFloatTy(*mLLVMContext), 3);
 	case BfTypeCode_FloatX4:
 		return llvm::ArrayType::get(llvm::Type::getFloatTy(*mLLVMContext), 4);
+	case BfTypeCode_DoubleX1:
+		return llvm::ArrayType::get(llvm::Type::getDoubleTy(*mLLVMContext), 1);
 	case BfTypeCode_DoubleX2:
 		return llvm::ArrayType::get(llvm::Type::getDoubleTy(*mLLVMContext), 2);
 	case BfTypeCode_DoubleX3:
@@ -728,6 +732,12 @@ BfIRTypeEx* BfIRCodeGen::GetTypeEx(BfTypeCode typeCode, bool& isSigned)
 	{
 		BfIRTypeEx* typeEx = new BfIRTypeEx();
 		typeEx->mLLVMType = GetLLVMType(typeCode, isSigned);
+
+		if (typeEx->mLLVMType == NULL)
+		{
+			Fail("Invalid type in BfIRCodeGen::GetTypeEx");
+			typeEx->mLLVMType = llvm::Type::getInt8Ty(*mLLVMContext);
+		}
 
 		if (typeEx->mLLVMType->isPointerTy())
 		{
@@ -1096,6 +1106,13 @@ void BfIRCodeGen::FixTypedValue(BfIRTypedValue& typedValue)
 		BF_ASSERT(!typedValue.mValue->getType()->isStructTy());
 		BF_ASSERT(!typedValue.mValue->getType()->isFunctionTy());
 	}
+}
+
+void BfIRCodeGen::FixEndingBlock(llvm::BasicBlock*& basicBlock)
+{
+	llvm::BasicBlock* endBlock = basicBlock;
+	if (mRemappedEndingBlocks.TryGetValue(basicBlock, &endBlock))
+		basicBlock = endBlock;
 }
 
 void BfIRCodeGen::Read(BfIRTypedValue& typedValue, BfIRCodeGenEntry** codeGenEntry, BfIRSizeAlignKind sizeAlignKind)
@@ -1815,7 +1832,7 @@ llvm::Value* BfIRCodeGen::DoCheckedIntrinsic(llvm::Intrinsic::ID intrin, llvm::V
 
 	if (!useAsm)
 	{
-		mLockedBlocks.Add(mIRBuilder->GetInsertBlock());
+		auto fromBlock = mIRBuilder->GetInsertBlock();
 
 		auto failBB = llvm::BasicBlock::Create(*mLLVMContext, "access.fail");
 		auto passBB = llvm::BasicBlock::Create(*mLLVMContext, "access.pass");
@@ -1832,6 +1849,8 @@ llvm::Value* BfIRCodeGen::DoCheckedIntrinsic(llvm::Intrinsic::ID intrin, llvm::V
 
 		mActiveFunction->insert(mActiveFunction->end(), passBB);
 		mIRBuilder->SetInsertPoint(passBB);
+
+		mRemappedEndingBlocks[fromBlock] = passBB;
 	}
 	else
 	{
@@ -1994,22 +2013,25 @@ void BfIRCodeGen::InitTarget()
 
 	if (theTriple.isWasm())
 		featuresStr = "+atomics,+bulk-memory,+mutable-globals,+sign-ext";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE)
-		featuresStr = "+sse";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE2)
-		featuresStr = "+sse2";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE3)
-		featuresStr = "+sse3";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE4)
-		featuresStr = "+sse4";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE41)
-		featuresStr = "+sse4.1";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE42)
-		featuresStr = "+sse4.2";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_AVX)
-		featuresStr = "+avx";
-	else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_AVX2)
-		featuresStr = "+avx2";
+	else if (theTriple.isX86())
+	{
+		if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE)
+			featuresStr = "+sse";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE2)
+			featuresStr = "+sse2";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE3)
+			featuresStr = "+sse3";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE4)
+			featuresStr = "+sse4";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE41)
+			featuresStr = "+sse4.1";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_SSE42)
+			featuresStr = "+sse4.2";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_AVX)
+			featuresStr = "+avx";
+		else if (mCodeGenOptions.mSIMDSetting == BfSIMDSetting_AVX2)
+			featuresStr = "+avx2";
+	}
 
 	std::optional<llvm::Reloc::Model> relocModel;
 	llvm::CodeModel::Model cmModel = llvm::CodeModel::Small;
@@ -3129,7 +3151,7 @@ void BfIRCodeGen::HandleNextCmd()
 	case BfIRCmd_SetInsertPoint:
 		{
 			CMD_PARAM(llvm::BasicBlock*, block);
-			if (mLockedBlocks.Contains(block))
+			if (mRemappedEndingBlocks.ContainsKey(block))
 				Fail("Attempt to modify locked block");
 			mIRBuilder->SetInsertPoint(block);
 		}
@@ -3238,6 +3260,7 @@ void BfIRCodeGen::HandleNextCmd()
 			CMD_PARAM(llvm::Value*, phiValue);
 			CMD_PARAM(llvm::Value*, value);
 			CMD_PARAM(llvm::BasicBlock*, comingFrom);
+			FixEndingBlock(comingFrom);
 			BF_ASSERT(llvm::isa<llvm::PHINode>(phiValue));
 			((llvm::PHINode*)phiValue)->addIncoming(value, comingFrom);
 		}
@@ -3452,7 +3475,9 @@ void BfIRCodeGen::HandleNextCmd()
 			func->addFnAttr("no-trapping-math", "true");
 			func->addFnAttr("min-legal-vector-width", "0");
 			func->addFnAttr("tune-cpu", "generic");
-			mFunctionsUsingSimd[func] = mCodeGenOptions.mSIMDSetting;
+
+			if (mCodeGenOptions.mSIMDSetting > BfSIMDSetting_None)
+				SetFunctionSimdType(func, mCodeGenOptions.mSIMDSetting);
 		}
 		break;
 	case BfIRCmd_SetFunctionName:
@@ -4006,8 +4031,11 @@ void BfIRCodeGen::HandleNextCmd()
 							mIRBuilder->CreateStore(args[2].mValue, gep);
 						else
 						{
+							auto ptrType = GetTypeMember(args[0].mTypeEx, 0);
+							auto elemType = GetTypeMember(ptrType, 0);
+
 							BfIRTypedValue result;
-							result.mTypeEx = GetTypeMember(args[0].mTypeEx, 0);
+							result.mTypeEx = elemType;
 							result.mValue = mIRBuilder->CreateLoad(result.mTypeEx->mLLVMType, gep);
 							SetResult(curId, result);
 						}
@@ -4879,7 +4907,7 @@ void BfIRCodeGen::HandleNextCmd()
 
 			if (!useAsm)
 			{
-				mLockedBlocks.Add(irBuilder->GetInsertBlock());
+				auto fromBlock = irBuilder->GetInsertBlock();
 
 				// This is generates slower code than the inline asm in debug mode, but can optimize well in release
 				auto int8Ty = llvm::Type::getInt8Ty(*mLLVMContext);
@@ -4902,6 +4930,8 @@ void BfIRCodeGen::HandleNextCmd()
 
 				curLLVMFunc->insert(curLLVMFunc->end(), passBB);
 				irBuilder->SetInsertPoint(passBB);
+
+				mRemappedEndingBlocks[fromBlock] = passBB;
 
 				SetResult(curId, passBB);
 			}
@@ -5636,38 +5666,56 @@ void BfIRCodeGen::SetConfigConst(int idx, int value)
 	mConfigConsts64.Add(constVal);
 }
 
+void BfIRCodeGen::SetFunctionSimdType(llvm::Function* function, BfSIMDSetting type)
+{
+	BfSIMDSetting currentType = BfSIMDSetting_None;
+	bool contains = mFunctionsUsingSimd.TryGetValue(function, &currentType);
+
+	if (type > BfSIMDSetting_None)
+	{
+		if (type > currentType)
+			mFunctionsUsingSimd.ForceAdd(function, type);
+	}
+	else
+	{
+		if (contains)
+			mFunctionsUsingSimd.Remove(function);
+	}
+}
+
 void BfIRCodeGen::SetActiveFunctionSimdType(BfSIMDSetting type)
 {
-	BfSIMDSetting currentType;
-	bool contains = mFunctionsUsingSimd.TryGetValue(mActiveFunction, &currentType);
-
-	if (!contains || type > currentType)
-		mFunctionsUsingSimd[mActiveFunction] = type;
+	SetFunctionSimdType(mActiveFunction, type);
 }
 
 String BfIRCodeGen::GetSimdTypeString(BfSIMDSetting type)
 {
-	switch (type)
+	if ((mTargetTriple.GetMachineType() == BfMachineType_x86) || (mTargetTriple.GetMachineType() == BfMachineType_x64))
 	{
-	case BfSIMDSetting_SSE:
-		return "+cmov,+cx8,+fxsr,+mmx,+sse,+x87";
-	case BfSIMDSetting_SSE2:
-		return "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87";
-	case BfSIMDSetting_SSE4:
-		return "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+ssse3,+x87";
-	case BfSIMDSetting_SSE41:
-		return "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+ssse3,+x87";
-	case BfSIMDSetting_SSE42:
-		return "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87";
-	case BfSIMDSetting_AVX:
-		return "+avx,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave";
-	case BfSIMDSetting_AVX2:
-		return "+avx,+avx2,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave";
-	case BfSIMDSetting_AVX512:
-		return "+avx,+avx2,+avx512bw,+avx512cd,+avx512dq,+avx512f,+avx512vl,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+evex512,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave";
-	default:
-		return "";
+		switch (type)
+		{
+		case BfSIMDSetting_SSE:
+			return "+cmov,+cx8,+fxsr,+mmx,+sse,+x87";
+		case BfSIMDSetting_SSE2:
+			return "+cmov,+cx8,+fxsr,+mmx,+sse,+sse2,+x87";
+		case BfSIMDSetting_SSE4:
+			return "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+ssse3,+x87";
+		case BfSIMDSetting_SSE41:
+			return "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+ssse3,+x87";
+		case BfSIMDSetting_SSE42:
+			return "+cmov,+crc32,+cx16,+cx8,+fxsr,+mmx,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87";
+		case BfSIMDSetting_AVX:
+			return "+avx,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave";
+		case BfSIMDSetting_AVX2:
+			return "+avx,+avx2,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave";
+		case BfSIMDSetting_AVX512:
+			return "+avx,+avx2,+avx512bw,+avx512cd,+avx512dq,+avx512f,+avx512vl,+bmi,+bmi2,+cmov,+crc32,+cx16,+cx8,+evex512,+f16c,+fma,+fxsr,+lzcnt,+mmx,+movbe,+popcnt,+sahf,+sse,+sse2,+sse3,+sse4.1,+sse4.2,+ssse3,+x87,+xsave";
+		default:
+			return "";
+		}
 	}
+
+	return "";
 }
 
 BfSIMDSetting BfIRCodeGen::GetSimdTypeFromFunction(llvm::Function* function)
@@ -6353,7 +6401,7 @@ int BF_LinuxFixLinkage()
 //#include "X86InstrInfo.h"
 
 #ifdef BF_PLATFORM_MACOS
-#include "AArch64/MCTargetDesc/AArch64MCTargetDesc.h"
+//#include "AArch64/MCTargetDesc/AArch64MCTargetDesc.h"
 //#include "AArch64/MCTargetDesc/AArch64BaseInfo.h"
 //#include "../X86InstrInfo.h"
 

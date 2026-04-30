@@ -543,10 +543,21 @@ namespace System.Reflection
 			FFIType* ffiRetType = null;
 			if (retType.IsStruct)
 			{
+#if BF_MACHINE_AARCH64
+				let ffiRetElements = scope:: List<FFIType*>(8);
+				for (let fi in retType.GetFields(.Instance | .DeclaredOnly))
+				{
+					let ffiType = GetFFIType!::(fi.FieldType);
+					ffiRetElements.Add(ffiType);
+				}
+				ffiRetElements.Add(null);
+				ffiRetType = scope::FFIType(Math.Max(24, retType.Size), retType.Align, .Struct, ffiRetElements.Ptr); // Force use of indirect return
+#else
 				ffiRetType = &FFIType.Void;
 				ffiParamList.Add(&FFIType.Pointer);
 				ffiArgList.Add(&variantData);
 				retData = &unusedRetVal;
+#endif
 			}
 			else
 				ffiRetType = GetFFIType!::(retType);
@@ -947,10 +958,21 @@ namespace System.Reflection
 			FFIType* ffiRetType = null;
 			if (retType.IsStruct)
 			{
+#if BF_MACHINE_AARCH64
+				let ffiRetElements = scope:: List<FFIType*>(8);
+				for (let fi in retType.GetFields(.Instance | .DeclaredOnly))
+				{
+					let ffiType = GetFFIType!::(fi.FieldType);
+					ffiRetElements.Add(ffiType);
+				}
+				ffiRetElements.Add(null);
+				ffiRetType = scope::FFIType(Math.Max(24, retType.Size), retType.Align, .Struct, ffiRetElements.Ptr); // Force use of indirect return
+#else
 				ffiRetType = &FFIType.Void;
 				ffiParamList.Add(&FFIType.Pointer);
 				ffiArgList.Add(&variantData);
 				retData = &unusedRetVal;
+#endif
 			}
 			else
 				ffiRetType = GetFFIType!::(retType);
@@ -1143,9 +1165,13 @@ namespace System.Reflection
 						if (info.mComptimeMethodFlags.HasFlag(.NoReflect))
 							continue;
 
-						bool matches =
-							(mBindingFlags.HasFlag(.Static) && (info.mMethodFlags.HasFlag(.Static))) ||
-							(mBindingFlags.HasFlag(.Instance) && (!info.mMethodFlags.HasFlag(.Static)));
+						bool matches = true;
+						if (mBindingFlags & (.Static | .Instance) != 0)
+						{
+							matches &=
+								(mBindingFlags.HasFlag(.Static) && (info.mMethodFlags.HasFlag(.Static))) ||
+								(mBindingFlags.HasFlag(.Instance) && (!info.mMethodFlags.HasFlag(.Static)));
+						}
 
 						// For backwards compatibility we treat missing protection specifiers the same as '.Public | .NonPublic'
 						if (mBindingFlags & (.Public | .NonPublic) != 0)
@@ -1175,9 +1201,13 @@ namespace System.Reflection
 							continue;
 						}	
 						var methodData = &mTypeInstance.[Friend]mMethodDataPtr[mIdx];
-						bool matches =
-							(mBindingFlags.HasFlag(.Static) && (methodData.mFlags.HasFlag(.Static))) ||
-							(mBindingFlags.HasFlag(.Instance) && (!methodData.mFlags.HasFlag(.Static)));
+						bool matches = true;
+						if (mBindingFlags & (.Static | .Instance) != 0)
+						{
+							matches &=
+								(mBindingFlags.HasFlag(.Static) && (methodData.mFlags.HasFlag(.Static))) ||
+								(mBindingFlags.HasFlag(.Instance) && (!methodData.mFlags.HasFlag(.Static)));
+						}
 
 						// For backwards compatibility we treat missing protection specifiers the same as '.Public | .NonPublic'
 						if (mBindingFlags & (.Public | .NonPublic) != 0)

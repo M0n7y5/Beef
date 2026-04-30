@@ -28,6 +28,7 @@ IDE/Tests/NewProject*/*
 *.csproj.user
 builds/*
 wasm/*
+IDE/wasm/*
 BeefManaged/*
 BeefPerf.txt
 IDE/Tests/Rando
@@ -35,3 +36,4 @@ install/
 JEMalloc/
 .cache
 .vscode
+*_Done.txt

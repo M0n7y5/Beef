@@ -8663,6 +8663,12 @@ BfTypedValue BfExprEvaluator::CreateCall(BfAstNode* targetSrc, const BfTypedValu
 						argValue = BfTypedValue(mModule->GetStringObjectValue(projectName),
 							mModule->ResolveTypeDef(mModule->mCompiler->mStringTypeDef));
 					}
+					else if (strcmp(globalVar->mName, "#ProjectDir") == 0)
+					{
+						String projectDir = methodInstance->mMethodDef->mDeclaringType->mProject->mDirectory;
+						argValue = BfTypedValue(mModule->GetStringObjectValue(projectDir),
+							mModule->ResolveTypeDef(mModule->mCompiler->mStringTypeDef));
+					}
 					else
 					{
 						argValue = mModule->GetCompilerFieldValue(globalVar->mName);
@@ -18667,17 +18673,20 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 				mModule->UpdateSrcPos(methodDeclaration->mNameNode);
 				mModule->SetIllegalSrcPos();
 
-				auto refType = mModule->CreateRefType(newLocalVar->mResolvedType);
-				auto allocaVal = mModule->CreateAlloca(refType);
-
-				mModule->mBfIRBuilder->CreateStore(newLocalVar->mAddr, allocaVal);
-
-				if (!mModule->mBfIRBuilder->mIgnoreWrites)
+				if (!newLocalVar->mResolvedType->IsValuelessType())
 				{
-					auto diType = mModule->mBfIRBuilder->DbgGetType(refType);
-					auto diVariable = mModule->mBfIRBuilder->DbgCreateAutoVariable(mModule->mCurMethodState->mCurScope->mDIScope,
-						newLocalVar->mName, mModule->mCurFilePosition.mFileInstance->mDIFile, mModule->mCurFilePosition.mCurLine, diType);
-					mModule->mBfIRBuilder->DbgInsertDeclare(allocaVal, diVariable);
+					auto refType = mModule->CreateRefType(newLocalVar->mResolvedType);
+					auto allocaVal = mModule->CreateAlloca(refType);
+
+					mModule->mBfIRBuilder->CreateStore(newLocalVar->mAddr, allocaVal);
+
+					if (!mModule->mBfIRBuilder->mIgnoreWrites)
+					{
+						auto diType = mModule->mBfIRBuilder->DbgGetType(refType);
+						auto diVariable = mModule->mBfIRBuilder->DbgCreateAutoVariable(mModule->mCurMethodState->mCurScope->mDIScope,
+							newLocalVar->mName, mModule->mCurFilePosition.mFileInstance->mDIFile, mModule->mCurFilePosition.mCurLine, diType);
+						mModule->mBfIRBuilder->DbgInsertDeclare(allocaVal, diVariable);
+					}
 				}
 			}
 			else if (newLocalVar->mValue)

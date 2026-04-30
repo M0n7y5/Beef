@@ -1,5 +1,6 @@
 #include "Common.h"
 #include "BFPlatform.h"
+#include <stdlib.h>
 #include <sys/stat.h>
 #ifdef BF_PLATFORM_LINUX
 #include <sys/syscall.h>
@@ -752,13 +753,24 @@ BFP_EXPORT void BFP_CALLTYPE BfpSystem_ShutdownCrashCatcher()
 
 BFP_EXPORT void BFP_CALLTYPE BfpSystem_SetCommandLine(int argc, char** argv)
 {
+#ifdef BF_PLATFORM_DARWIN
+    char path[4096];
+    uint32_t size = sizeof(path);
+    if (_NSGetExecutablePath(path, &size) == 0)
+        gExePath = path;
+
+    // When when running with a './file', we end up with an annoying '/./' in our path
+    gExePath.Replace("/./", "/");
+#else
     char exePath[PATH_MAX] = { 0 };
     int nchar = readlink("/proc/self/exe", exePath, PATH_MAX);
     if (nchar > 0)
     {
         gExePath = exePath;
     }
-    else
+#endif
+
+    if (gExePath.IsEmpty())
     {
         char* relPath = argv[0];
         char* cwd = getcwd(NULL, 0);
@@ -898,19 +910,6 @@ BFP_EXPORT void BFP_CALLTYPE BfpSystem_GetCommandLine(char* outStr, int* inOutSt
 
 BFP_EXPORT void BFP_CALLTYPE BfpSystem_GetExecutablePath(char* outStr, int* inOutStrSize, BfpSystemResult* outResult)
 {
-#ifdef BF_PLATFORM_DARWIN
-    if (gExePath.IsEmpty())
-    {
-        char path[4096];
-        uint32_t size = sizeof(path);
-        if (_NSGetExecutablePath(path, &size) == 0)
-            gExePath = path;
-
-        // When when running with a './file', we end up with an annoying '/./' in our path
-        gExePath.Replace("/./", "/");
-    }
-#endif
-
 	TryStringOut(gExePath, outStr, inOutStrSize, (BfpResult*)outResult);
 }
 
@@ -932,6 +931,25 @@ BFP_EXPORT void BFP_CALLTYPE BfpSystem_GetEnvironmentStrings(char* outStr, int* 
     }
 
     TryStringOut(env, outStr, inOutStrSize, (BfpResult*)outResult);
+}
+
+BFP_EXPORT void BFP_CALLTYPE BfpSystem_GetEnvironmentVariable(const char* var, char* outStr, int* inOutStrSize, BfpSystemResult* outResult)
+{
+    char* value = getenv(var);
+    if (!value)
+    {
+        OUTRESULT((BfpSystemResult)(int)BfpResult_UnknownError);
+        return;
+    }
+    TryStringOut(String(value), outStr, inOutStrSize, (BfpResult*)outResult);
+}
+
+BFP_EXPORT void BFP_CALLTYPE BfpSystem_SetEnvironmentVariable(const char* var, const char* value, BfpSystemResult* outResult)
+{
+    if (setenv(var, value, 1/* override exisiting entry */))
+        OUTRESULT((BfpSystemResult)(int)BfpResult_UnknownError);
+    else
+        OUTRESULT(BfpSystemResult_Ok);
 }
 
 BFP_EXPORT int BFP_CALLTYPE BfpSystem_GetNumLogicalCPUs(BfpSystemResult* outResult)
@@ -1678,6 +1696,9 @@ struct BfpThread
 
     ~BfpThread()
     {
+#ifndef BFP_HAS_PTHREAD_TIMEDJOIN_NP
+    BfpEvent_Release(mDoneEvent);
+#endif
     }
 
     void Release()
@@ -1755,9 +1776,6 @@ BFP_EXPORT void BFP_CALLTYPE BfpThread_Release(BfpThread* thread)
     if (thread == NULL)
         return;
 
-#ifndef BFP_HAS_PTHREAD_TIMEDJOIN_NP
-    BfpEvent_Release(thread->mDoneEvent);
-#endif
     if (!thread->mPThreadReleased)
     {
         pthread_detach(thread->mPThread);
@@ -1946,12 +1964,12 @@ BFP_EXPORT void BFP_CALLTYPE BfpSpawn_Kill(BfpSpawn* spawn, int exitCode, BfpKil
 			{
 				kill(pid, SIGKILL) ;
 			}
-		}
-		while (false);
 
 #else
-		NOT_IMPL;
+            NOT_IMPL;
 #endif
+		}
+		while (false);
 	}
 
 	if (kill(spawn->mPid, SIGKILL) != 0)
@@ -2758,7 +2776,7 @@ BFP_EXPORT BfpFileAttributes BFP_CALLTYPE BfpFile_GetAttributes(const char* path
 	const bool groupReadonly = (fileStat.st_mode & (S_IRGRP | S_IWGRP)) == S_IRGRP;
 	const bool othersReadonly = (fileStat.st_mode & (S_IROTH | S_IWOTH)) == S_IROTH;
 
-	const __uid_t uid = geteuid();
+	const uid_t uid = geteuid();
 	if (fileStat.st_uid == uid)
 	{
 		if (userReadonly)
@@ -2775,9 +2793,9 @@ BFP_EXPORT BfpFileAttributes BFP_CALLTYPE BfpFile_GetAttributes(const char* path
 		{
 			bool inGroup = false;
 
-			__gid_t groups[64];
+			gid_t groups[64];
 			const int size = getgroups(0, NULL);
-			__gid_t* const ptr = (size > 64) ? new  __gid_t[size] : groups;
+			gid_t* const ptr = (size > 64) ? new gid_t[size] : groups;
 			if (getgroups(size, ptr) > 0)
 			{
 				for (int i = 0; i < size; ++i)
@@ -2838,7 +2856,7 @@ BFP_EXPORT void BFP_CALLTYPE BfpFile_SetAttributes(const char* path, BfpFileAttr
 		return;
 	}
 
-	__mode_t newMode = fileStat.st_mode;
+	mode_t newMode = fileStat.st_mode;
 	if ((attribs & BfpFileAttribute_ReadOnly) != 0)
 	{
 		newMode &= ~(S_IWUSR | S_IWGRP | S_IWOTH);

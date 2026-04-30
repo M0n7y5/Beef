@@ -168,9 +168,17 @@ BootApp::BootApp()
 #ifdef BF_PLATFORM_WINDOWS
 	mTargetTriple = "x86_64-pc-windows-msvc";
 #elif defined BF_PLATFORM_MACOS
-	mTargetTriple = "x86_64-apple-macosx10.8.0";
+	#if defined(__aarch64__) || defined(__arm64__)
+		mTargetTriple = "aarch64-apple-macosx11.0.0";
+	#else
+		mTargetTriple = "x86_64-apple-macosx10.8.0";
+	#endif
 #else
-	mTargetTriple = "x86_64-unknown-linux-gnu";
+	#if defined(__aarch64__) || defined(__arm64__)
+		mTargetTriple = "aarch64-unknown-linux-gnu";
+	#else
+		mTargetTriple = "x86_64-unknown-linux-gnu";
+	#endif
 #endif
 	
 	GetConsoleColor(gConsoleFGColor, gConsoleBGColor);
@@ -425,7 +433,7 @@ void BootApp::QueueFile(const StringImpl& path, void* project)
 		worked &= BfParser_Reduce(bfParser, mPassInstance);
 		worked &= BfParser_BuildDefs(bfParser, mPassInstance, NULL, false);
 		
-		delete data;
+		delete[] data;
 	}
 }
 
@@ -813,6 +821,12 @@ bool BootApp::Compile()
 	mDefines.Append("\nBF_LITTLE_ENDIAN");
 	mDefines.Append("\n");
 	mDefines.Append(BF_PLATFORM_NAME);
+
+#if defined(__aarch64__) || defined(__arm64__) || defined (_M_ARM64)
+	mDefines.Append("\nBF_MACHINE_AARCH64");
+#else
+	mDefines.Append("\nBF_MACHINE_X64");
+#endif
 
 	int ltoType = 0;
 	BfProjectFlags flags = BfProjectFlags_None;
