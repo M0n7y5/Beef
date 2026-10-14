@@ -915,10 +915,8 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 			mRequestedStackFrameIdx = 0;
 			mBreakStackFrameIdx = 0;
 
-			// Thread info is fully populated once we have consumed the stop event
-			lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
-			if ((!thread.IsValid()) && (mLLDBProcess.GetNumThreads() > 0))
-				thread = mLLDBProcess.GetThreadAtIndex(0);
+			// LLDB only selects the stopping thread in its own event handler, which this loop bypasses
+			lldb::SBThread thread = SelectStoppedThread();
 
 			auto threadStopReason = thread.IsValid() ? thread.GetStopReason() : lldb::eStopReasonNone;
 
@@ -1021,6 +1019,17 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 					// LLDB has already checked the breakpoint's condition, so this hit counts.
 					Breakpoint* head = (bp->mHead != NULL) ? bp->mHead : bp;
 					LLDBBreakpoint* conditionBp = (LLDBBreakpoint*)head;
+
+					// A breakpoint bound to a thread (as run-to-cursor's is) only stops that thread. 0 is a
+					// binding whose thread is gone, which never stops.
+					if ((head->mThreadId != -1) && (head->mThreadId != (intptr)thread.GetThreadID()))
+					{
+						LLDBLog("Breakpoint %d hit on thread %llu, bound to thread %lld, continuing\n", (int)bpId, (unsigned long long)thread.GetThreadID(), (long long)head->mThreadId);
+						mActiveBreakpoint = NULL;
+						mRunState = RunState_Running;
+						mLLDBProcess.Continue();
+						return;
+					}
 					if (!conditionBp->mBeefCondition.IsEmpty())
 					{
 						// The breakpoint only counts as hit when its condition holds. As in WinDebugger, a
@@ -2512,6 +2521,77 @@ String LLDBDebugger::GetThreadInfo()
 	}
 
 	return result;
+}
+
+// Selects the thread that caused the stop, as Process::HandleProcessStateChangedEvent does: the
+// selected thread is kept when it stopped for a reason of its own, else a completed step plan wins
+// over a breakpoint or signal. Only the selected thread's breakpoint hit survives the resume, so a
+// hit on a breakpoint bound to another thread is chosen last.
+lldb::SBThread LLDBDebugger::SelectStoppedThread()
+{
+	lldb::SBThread current = mLLDBProcess.GetSelectedThread();
+	if ((!current.IsValid()) && (mLLDBProcess.GetNumThreads() > 0))
+		current = mLLDBProcess.GetThreadAtIndex(0);
+
+	auto isStopReasonOfInterest = [&](lldb::SBThread& thread)
+	{
+		switch (thread.GetStopReason())
+		{
+		case lldb::eStopReasonInvalid:
+		case lldb::eStopReasonNone:
+			return false;
+		case lldb::eStopReasonSignal:
+			// A signal the target isn't stopped for can't have caused this stop
+			return mLLDBProcess.GetUnixSignals().GetShouldStop((int32)thread.GetStopReasonDataAtIndex(0));
+		default:
+			return true;
+		}
+	};
+	auto isBreakpointForOtherThread = [&](lldb::SBThread& thread)
+	{
+		if (thread.GetStopReason() != lldb::eStopReasonBreakpoint)
+			return false;
+		LLDBBreakpoint* bp = NULL;
+		if (!mBreakpointIdMap.TryGetValue((int)thread.GetStopReasonDataAtIndex(0), &bp))
+			return false;
+		Breakpoint* head = (bp->mHead != NULL) ? bp->mHead : bp;
+		return (head->mThreadId != -1) && (head->mThreadId != (intptr)thread.GetThreadID());
+	};
+
+	if ((current.IsValid()) && (isStopReasonOfInterest(current)) && (!isBreakpointForOtherThread(current)))
+		return current;
+
+	lldb::SBThread planThread;
+	lldb::SBThread otherThread;
+	lldb::SBThread otherThreadsBreakpointThread;
+	uint32 numThreads = mLLDBProcess.GetNumThreads();
+	for (uint32 i = 0; i < numThreads; i++)
+	{
+		lldb::SBThread thread = mLLDBProcess.GetThreadAtIndex(i);
+		if ((!thread.IsValid()) || (!isStopReasonOfInterest(thread)))
+			continue;
+		if (thread.GetStopReason() == lldb::eStopReasonPlanComplete)
+		{
+			if (!planThread.IsValid())
+				planThread = thread;
+		}
+		else if (isBreakpointForOtherThread(thread))
+		{
+			if (!otherThreadsBreakpointThread.IsValid())
+				otherThreadsBreakpointThread = thread;
+		}
+		else if (!otherThread.IsValid())
+			otherThread = thread;
+	}
+
+	lldb::SBThread selected = planThread.IsValid() ? planThread : otherThread.IsValid() ? otherThread : otherThreadsBreakpointThread;
+	if (!selected.IsValid())
+		return current;
+	if ((current.IsValid()) && (current.GetThreadID() == selected.GetThreadID()))
+		return current;
+	LLDBLog("Stop on thread %llu (reason %d), selecting it\n", (unsigned long long)selected.GetThreadID(), (int)selected.GetStopReason());
+	mLLDBProcess.SetSelectedThread(selected);
+	return selected;
 }
 
 void LLDBDebugger::SetActiveThread(int threadId)
