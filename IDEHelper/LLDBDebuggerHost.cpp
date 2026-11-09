@@ -528,6 +528,25 @@ void LLDBDebugger::AddParamValue(int paramIdx, bool hadThis, CPURegisters* regis
 	HostUnsupported("AddParamValue");
 }
 
+// The SysV red zone
+int LLDBDebugger::GetEvalStackReserve()
+{
+	return 128;
+}
+
+addr_target LLDBDebugger::GetEvalReturnAddress()
+{
+	HostUnsupported("GetEvalReturnAddress");
+	return 0;
+}
+
+bool LLDBDebugger::SetupCallArgs(DbgSubprogram* method, SizedArrayImpl<DbgMethodArgument>& argPushQueue, const DbgTypedValue& structRetVal, CPURegisters* registers, DbgTypedValue& outThisVal, String& outError)
+{
+	HostUnsupported("SetupCallArgs");
+	outError = "Calls are not supported by the Linux debugger yet";
+	return true;
+}
+
 bool LLDBDebugger::CheckNeedsSRetArgument(DbgType* retType)
 {
 	HostUnsupported("CheckNeedsSRetArgument");

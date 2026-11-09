@@ -4010,6 +4010,22 @@ void WinDebugger::AddParamValue(int paramIdx, bool hadThis, CPURegisters* regist
 #endif
 }
 
+int WinDebugger::GetEvalStackReserve()
+{
+	return 0;
+}
+
+// The call returns to this unmapped address, and the access violation there ends the evaluation
+addr_target WinDebugger::GetEvalReturnAddress()
+{
+	return 42;
+}
+
+bool WinDebugger::SetupCallArgs(DbgSubprogram* method, SizedArrayImpl<DbgMethodArgument>& argPushQueue, const DbgTypedValue& structRetVal, CPURegisters* registers, DbgTypedValue& outThisVal, String& outError)
+{
+	return false;
+}
+
 bool WinDebugger::CheckNeedsSRetArgument(DbgType* retType)
 {
 	if (!retType->IsCompositeType())

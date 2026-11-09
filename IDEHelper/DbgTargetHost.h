@@ -166,6 +166,9 @@ public:
 	virtual void AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const DbgTypedValue& typedValue) = 0;
 	virtual bool CheckNeedsSRetArgument(DbgType* retType) = 0;
 	virtual DbgTypedValue ReadReturnValue(CPURegisters* registers, DbgType* type) = 0;
+	virtual int GetEvalStackReserve() = 0;
+	virtual addr_target GetEvalReturnAddress() = 0;
+	virtual bool SetupCallArgs(DbgSubprogram* method, SizedArrayImpl<DbgMethodArgument>& argPushQueue, const DbgTypedValue& structRetVal, CPURegisters* registers, DbgTypedValue& outThisVal, String& outError) = 0;
 
 	virtual bool ProcessEvalString(DbgCompileUnit* dbgCompileUnit, DbgTypedValue useTypedValue, String& evalStr, String& displayString, DwFormatInfo& formatInfo, DebugVisualizerEntry* debugVis, bool limitLength);
 

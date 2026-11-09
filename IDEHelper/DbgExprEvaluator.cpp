@@ -7046,7 +7046,7 @@ DbgTypedValue DbgExprEvaluator::CreateCall(DbgSubprogram* method, DbgTypedValue 
 	//registers->mIntRegs.efl = 0x244;
 
 	//mDebugger->PushValue(registers, 0);
-	mDebugger->PushValue(registers, 42);
+	mDebugger->PushValue(registers, mDebugger->GetEvalReturnAddress());
 
 	*(registers->GetPCRegisterRef()) = startAddr;
 
@@ -7438,6 +7438,8 @@ DbgTypedValue DbgExprEvaluator::CreateCall(DbgSubprogram* method, SizedArrayImpl
 	bool canSetRegisters = mDebugger->PopulateRegisters(&registers);
 
 	auto* regSP = registers.GetSPRegisterRef();
+	// A SysV leaf function keeps locals in the red zone below the stack pointer
+	*regSP -= mDebugger->GetEvalStackReserve();
 	if (mCallStackPreservePos != 0)
 	{
 		if (mCallStackPreservePos <= *regSP)
@@ -7495,15 +7497,23 @@ DbgTypedValue DbgExprEvaluator::CreateCall(DbgSubprogram* method, SizedArrayImpl
 		}
 	}
 
-	if (structRetVal.mSrcAddress != 0)
+	DbgTypedValue thisVal;
+	String setupError;
+	bool setupHandled = mDebugger->SetupCallArgs(method, argPushQueue, structRetVal, &registers, thisVal, setupError);
+	if (!setupError.IsEmpty())
+	{
+		Fail(setupError, NULL);
+		return DbgTypedValue();
+	}
+
+	if ((!setupHandled) && (structRetVal.mSrcAddress != 0))
 	{
 		BfLogDbgExpr(" SRet:0x%p", structRetVal.mSrcAddress);
 		mDebugger->AddParamValue(0, method->mHasThis && !thisByValue, &registers, structRetVal);
 		paramIdx++;
 	}
 
-	DbgTypedValue thisVal;
-	for (int padCount = 0; true; padCount++)
+	for (int padCount = 0; !setupHandled; padCount++)
 	{
 		auto regSave = registers;
 		int paramIdxSave = paramIdx;
