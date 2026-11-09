@@ -3587,6 +3587,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 
 	Array<int> deferredArrayDims;
 	HashSet<DbgSubprogram*> splatSubprograms;
+	HashSet<DbgSubprogram*> localThisCandidates;
 	Dictionary<String, DbgSubprogram*> declSubprograms;
 	bool wantsInlineContexts = WantsDwarfInlineContexts();
 	Array<DbgInlineeRange> dieInlineeRanges;
@@ -4351,6 +4352,9 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				{
 					dbgVariable = GetOrCreate<DbgVariable*>(tagIdx, dataMap);
 					dwBlock->mVariables.PushBack(dbgVariable);
+					DbgSubprogram* blockSubprogram = GetStackTop<DbgSubprogram*>(&dataStack);
+					if ((compileUnit->mLanguage == DbgLanguage_Beef) && (blockSubprogram != NULL) && (dwBlock == &blockSubprogram->mBlock) && (blockSubprogram->mParams.IsEmpty()))
+						localThisCandidates.Add(blockSubprogram);
 				}
 				else
 				{
@@ -4982,6 +4986,33 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 
 	for (auto& abstractOriginEntry : abstractOriginReplaceList)
 		abstractOriginEntry.Replace();
+
+	for (auto subprogram : localThisCandidates)
+	{
+		if ((subprogram->mHasThis) || (!subprogram->mParams.IsEmpty()))
+			continue;
+		DbgVariable* thisVariable = NULL;
+		for (auto variable : subprogram->mBlock.mVariables)
+		{
+			if ((variable->mName != NULL) && (variable->mType != NULL) && (strcmp(variable->mName, "this") == 0))
+				thisVariable = variable;
+		}
+		if (thisVariable == NULL)
+			continue;
+		DbgVariable* thisParam = mAlloc.Alloc<DbgVariable>();
+		thisParam->mCompileUnit = compileUnit;
+		thisParam->mIsParam = true;
+		thisParam->mName = "this";
+		subprogram->mParams.PushFront(thisParam);
+		subprogram->mHasThis = true;
+		if (subprogram->mParentType == NULL)
+		{
+			DbgType* thisType = thisVariable->mType->RemoveModifiers();
+			if (thisType->IsPointer())
+				thisType = thisType->mTypeParam;
+			subprogram->mParentType = thisType;
+		}
+	}
 
 	for (auto subprogram : splatSubprograms)
 	{
