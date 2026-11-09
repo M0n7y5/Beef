@@ -4745,7 +4745,16 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					switch (atEncoding)
 					{
 					case DW_ATE_UTF:
-						if (atByteSize == 1)
+						if (compileUnit->mLanguage == DbgLanguage_Beef)
+						{
+							if (atByteSize == 1)
+								dbgType->mTypeCode = DbgType_UChar;
+							else if (atByteSize == 2)
+								dbgType->mTypeCode = DbgType_UChar16;
+							else
+								dbgType->mTypeCode = DbgType_UChar32;
+						}
+						else if (atByteSize == 1)
 							dbgType->mTypeCode = DbgType_Utf8;
 						else if (atByteSize == 2)
 							dbgType->mTypeCode = DbgType_Utf16;
