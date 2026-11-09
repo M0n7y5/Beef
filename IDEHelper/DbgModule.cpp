@@ -3665,6 +3665,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		int atArtificial = 0;
 		int atExternal = 0;
 		int atByteSize = -1;
+		int atAlignment = 0;
 		int atEncoding = 0;
 		int atSpecification = 0;
 		int atObjectPointer = 0;
@@ -3704,6 +3705,9 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				break;
 			case DW_AT_byte_size:
 				atByteSize = ReadValue<int>(data, form);
+				break;
+			case DW_AT_alignment:
+				atAlignment = ReadValue<int>(data, form);
 				break;
 			case DW_AT_bit_offset:
 				atBitOffset = ReadValue<int>(data, form);
@@ -4708,6 +4712,8 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					dbgType->mSize = atByteSize;
 					dbgType->mSizeCalculated = true;
 				}
+				if ((atAlignment > 0) && (compileUnit->mLanguage == DbgLanguage_Beef))
+					dbgType->mAlign = atAlignment;
 
 				switch (entryTag)
 				{
