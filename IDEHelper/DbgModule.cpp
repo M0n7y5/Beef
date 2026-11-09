@@ -4572,6 +4572,11 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					parentType->mHasVTable = true;
 					break;
 				}
+				if ((atName != NULL) && (compileUnit->mLanguage == DbgLanguage_Beef) && (strcmp(atName, "$prim") == 0))
+				{
+					parentType->mTypeParam = GetOrCreateType(atType, dataMap);
+					break;
+				}
 				//DbgVariable* member = mAlloc.Alloc<DbgVariable>();
 				DbgVariable* member = GetOrCreate<DbgVariable*>(tagIdx, dataMap);
 				member->mIsMember = true;
@@ -4952,6 +4957,23 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 
 	for (auto& abstractOriginEntry : abstractOriginReplaceList)
 		abstractOriginEntry.Replace();
+
+	if (compileUnit->mLanguage == DbgLanguage_Beef)
+	{
+		for (int typeIdx = startingTypeIdx; typeIdx < (int)linkedModule->mTypes.size(); typeIdx++)
+		{
+			DbgType* dbgType = linkedModule->mTypes[typeIdx];
+			if ((dbgType->mTypeCode != DbgType_Struct) || (dbgType->mTypeParam == NULL) || (dbgType->mBaseTypes.mHead == NULL))
+				continue;
+			DbgType* baseType = dbgType->mBaseTypes.mHead->mBaseType;
+			if ((baseType != NULL) && (baseType->mTypeName != NULL) && (strcmp(baseType->mTypeName, "Enum") == 0))
+			{
+				dbgType->mTypeCode = DbgType_Enum;
+				if ((dbgType->mTypeParam->mTypeCode == DbgType_Enum) && (dbgType->mTypeParam->mTypeParam != NULL))
+					dbgType->mTypeParam = linkedModule->GetPrimitiveType(dbgType->mTypeParam->mTypeParam->mTypeCode, DbgLanguage_Beef);
+			}
+		}
+	}
 
 	GetLinkedModule()->MapTypes(startingTypeIdx);
 
