@@ -3590,6 +3590,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 	HashSet<DbgSubprogram*> splatSubprograms;
 	HashSet<DbgSubprogram*> localThisCandidates;
 	Dictionary<String, DbgSubprogram*> declSubprograms;
+	Dictionary<String, DbgSubprogram*> defSubprograms;
 	bool wantsInlineContexts = WantsDwarfInlineContexts();
 	Array<DbgInlineeRange> dieInlineeRanges;
 
@@ -4143,8 +4144,13 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					subProgram->mName = atName;
 
 					subProgram->mLinkName = atLinkageName;
-					if ((atDeclaration) && (atLinkageName != NULL) && (compileUnit->mLanguage == DbgLanguage_Beef))
-						declSubprograms[atLinkageName] = subProgram;
+					if ((atLinkageName != NULL) && (compileUnit->mLanguage == DbgLanguage_Beef))
+					{
+						if (atDeclaration)
+							declSubprograms[atLinkageName] = subProgram;
+						else
+							defSubprograms[atLinkageName] = subProgram;
+					}
 					if (atAbstractOrigin != 0)
 					{
 						DbgSubprogram* originSubProgram = GetOrCreate<DbgSubprogram*>(atAbstractOrigin, dataMap);
@@ -5019,8 +5025,8 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		}
 	}
 
-	// CodeView gives each splatted parameter a location-less variable that the evaluator expands into its "$name$" fields;
-	// DWARF has only the fields, so the variable is added here, typed by the matching parameter of the declaration
+	// The evaluator expects CodeView's shape: a location-less parameter per splat and its "$name$" fields as locals.
+	// DWARF has only the fields, so the parameter is added, typed by the declaration's parameter
 	for (auto subprogram : splatSubprograms)
 	{
 		Array<DbgType*> declTypes;
@@ -5033,48 +5039,74 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		Array<DbgVariable*> params;
 		for (auto param : subprogram->mParams)
 			params.Add(param);
+		Array<DbgVariable*> newParams;
+		Array<DbgVariable*> splatFields;
 		int declIdx = 0;
 		String lastSplatName;
+		bool lastSplatMoved = false;
 		for (auto param : params)
 		{
-			if ((param->mName == NULL) || (param->mName[0] != '$'))
+			const char* nameEnd = ((param->mName != NULL) && (param->mName[0] == '$')) ? strchr(param->mName + 1, '$') : NULL;
+			if (nameEnd == NULL)
 			{
 				lastSplatName.Clear();
 				declIdx++;
+				newParams.Add(param);
 				continue;
 			}
-			const char* nameEnd = strchr(param->mName + 1, '$');
-			if (nameEnd == NULL)
-				continue;
 			String splatName(param->mName + 1, (int)(nameEnd - param->mName - 1));
-			if (splatName == lastSplatName)
-				continue;
-			lastSplatName = splatName;
-			DbgType* declType = (declIdx < declTypes.mSize) ? declTypes[declIdx] : NULL;
-			declIdx++;
-			DbgType* splatType = (splatName == "this") ? subprogram->mParentType : declType;
-			if (splatType == NULL)
-				continue;
-			bool exists = false;
-			for (auto checkParam : params)
-				if ((checkParam->mName != NULL) && (splatName == checkParam->mName))
-					exists = true;
-			if (exists)
-				continue;
-			DbgVariable* splatVariable = mAlloc.Alloc<DbgVariable>();
-			splatVariable->mCompileUnit = compileUnit;
-			splatVariable->mIsParam = true;
-			splatVariable->mIsConst = true;
-			splatVariable->mName = DbgDupString(splatName.c_str());
-			splatVariable->mType = splatType;
-			if (splatName == "this")
+			if (splatName != lastSplatName)
 			{
-				subprogram->mParams.PushFront(splatVariable);
-				subprogram->mHasThis = true;
+				lastSplatName = splatName;
+				DbgType* declType = (declIdx < declTypes.mSize) ? declTypes[declIdx] : NULL;
+				declIdx++;
+				DbgType* splatType = (splatName == "this") ? subprogram->mParentType : declType;
+				lastSplatMoved = splatType != NULL;
+				if (lastSplatMoved)
+				{
+					DbgVariable* splatVariable = mAlloc.Alloc<DbgVariable>();
+					splatVariable->mCompileUnit = compileUnit;
+					splatVariable->mIsParam = true;
+					splatVariable->mIsConst = true;
+					splatVariable->mName = DbgDupString(splatName.c_str());
+					splatVariable->mType = splatType;
+					newParams.Add(splatVariable);
+					if (splatName == "this")
+						subprogram->mHasThis = true;
+				}
 			}
+			if (lastSplatMoved)
+				splatFields.Add(param);
 			else
-				subprogram->mParams.PushBack(splatVariable);
+				newParams.Add(param);
 		}
+		if (splatFields.IsEmpty())
+			continue;
+
+		Array<DbgVariable*> locals;
+		for (auto variable : subprogram->mBlock.mVariables)
+			locals.Add(variable);
+		subprogram->mParams.Clear();
+		subprogram->mBlock.mVariables.Clear();
+		for (auto param : newParams)
+			subprogram->mParams.PushBack(param);
+		for (auto field : splatFields)
+			subprogram->mBlock.mVariables.PushBack(field);
+		for (auto variable : locals)
+			subprogram->mBlock.mVariables.PushBack(variable);
+	}
+
+	// Beef's DWARF gives a method a declaration in its type and a separate definition without DW_AT_specification;
+	// method lookup finds the declaration, so it takes the definition's parameters as CodeView has them in one record
+	for (auto& kv : declSubprograms)
+	{
+		DbgSubprogram* defSubprogram = NULL;
+		if (!defSubprograms.TryGetValue(kv.mKey, &defSubprogram))
+			continue;
+		DbgSubprogram* declSubprogram = kv.mValue;
+		declSubprogram->mParams = defSubprogram->mParams;
+		declSubprogram->mBlock.mVariables = defSubprogram->mBlock.mVariables;
+		declSubprogram->mHasThis = defSubprogram->mHasThis;
 	}
 
 	// The base type's name is only known once the unit is read
