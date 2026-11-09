@@ -162,6 +162,7 @@ LLDBDebugger::LLDBDebugger(DebugManager* debugManager)
 	mHostUnsupportedCount = 0;
 	mHostFramesLive = false;
 	mHasSavedRegisters = false;
+	mEvalReturnSlot = 0;
 	mEmptyDebugTarget = new DebugTarget(this);
 	mEmptyDebugTarget->CreateEmptyTarget();
 	mEmptyDebugTarget->mIsEmpty = true;

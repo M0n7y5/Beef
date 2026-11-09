@@ -518,12 +518,30 @@ void LLDBDebugger::PushValue(CPURegisters* registers, const DbgTypedValue& typed
 
 void LLDBDebugger::SetThisRegister(CPURegisters* registers, addr_target val)
 {
-	HostUnsupported("SetThisRegister");
+	registers->mIntRegs.rdi = val;
 }
 
 void LLDBDebugger::AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const DbgTypedValue& typedValue)
 {
-	HostUnsupported("AddParamValue");
+	int64* intArgRegs[] = { &registers->mIntRegs.rdi, &registers->mIntRegs.rsi, &registers->mIntRegs.rdx,
+		&registers->mIntRegs.rcx, &registers->mIntRegs.r8, &registers->mIntRegs.r9 };
+	int regIdx = paramIdx + (hadThis ? 1 : 0);
+	if (typedValue.mType->IsFloat())
+	{
+		if (paramIdx < 8)
+		{
+			if (typedValue.mType->mTypeCode == DbgType_Single)
+				registers->mXmmRegsArray[paramIdx].f[0] = typedValue.mSingle;
+			else
+				registers->mXmmDRegsArray[paramIdx].d[0] = typedValue.mDouble;
+		}
+		else
+			PushValue(registers, typedValue);
+	}
+	else if (regIdx < 6)
+		*intArgRegs[regIdx] = typedValue.mType->IsCompositeType() ? (int64)typedValue.mSrcAddress : (int64)typedValue.mPtr;
+	else
+		PushValue(registers, typedValue);
 }
 
 // The SysV red zone
@@ -540,21 +558,31 @@ addr_target LLDBDebugger::GetEvalReturnAddress()
 
 bool LLDBDebugger::SetupCallArgs(DbgSubprogram* method, SizedArrayImpl<DbgMethodArgument>& argPushQueue, const DbgTypedValue& structRetVal, CPURegisters* registers, DbgTypedValue& outThisVal, String& outError)
 {
-	HostUnsupported("SetupCallArgs");
-	outError = "Calls are not supported by the Linux debugger yet";
-	return true;
+	mEvalReturnSlot = 0;
+	if ((structRetVal.mSrcAddress != 0) && (DbgCallConvSysV::GetLoweredReturnParts(method->mReturnType, mEvalReturnParts)))
+		mEvalReturnSlot = structRetVal.mSrcAddress;
+	return DbgCallConvSysV::SetupCall(this, method, argPushQueue, structRetVal, registers, outThisVal, outError);
 }
 
 bool LLDBDebugger::CheckNeedsSRetArgument(DbgType* retType)
 {
-	HostUnsupported("CheckNeedsSRetArgument");
-	return false;
+	return (retType->IsCompositeType()) && (!retType->IsTypedPrimitive()) && (retType->GetByteCount() > 0);
 }
 
 DbgTypedValue LLDBDebugger::ReadReturnValue(CPURegisters* registers, DbgType* type)
 {
-	HostUnsupported("ReadReturnValue");
-	return DbgTypedValue();
+	DbgTypedValue retValue;
+	retValue.mType = type;
+	DbgType* valueType = type->RemoveModifiers();
+	if (valueType->IsTypedPrimitive())
+		valueType = valueType->mTypeParam->RemoveModifiers();
+	if (valueType->mTypeCode == DbgType_Single)
+		retValue.mSingle = registers->mXmmRegsArray[0].f[0];
+	else if (valueType->mTypeCode == DbgType_Double)
+		retValue.mDouble = registers->mXmmDRegsArray[0].d[0];
+	else
+		retValue.mInt64 = registers->mIntRegs.rax;
+	return retValue;
 }
 
 addr_target LLDBDebugger::ReserveHotHeapMemory(addr_target address, int size)
