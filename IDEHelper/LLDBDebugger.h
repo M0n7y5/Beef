@@ -544,6 +544,7 @@ public:
 	virtual int SetProtection(intptr address, int size, int prot) override;
 	virtual bool IsMiniDumpDebugger() override;
 	virtual int GetActiveThreadId() override;
+	virtual int GetEvalThreadId() override;
 	virtual String GetActiveThreadName() override;
 	virtual void ClearExplicitStopThread() override;
 	virtual int GetActiveBreakpointHitCount() override;
