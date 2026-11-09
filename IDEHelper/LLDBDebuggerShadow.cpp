@@ -7,6 +7,7 @@
 #include "DbgModule.h"
 #include "ElfDbgModule.h"
 #include "DWARFInfo.h"
+#include "llvm/Demangle/Demangle.h"
 #include "BeefySysLib/util/AllocDebug.h"
 
 USING_NS_BF;
@@ -544,6 +545,282 @@ void LLDBDebugger::ShadowCheckBreakpoint(LLDBBreakpoint* bp)
 	{
 		mShadowExtraCount++;
 		ShadowReportLine(StrFormat("DBGSHADOW breakpoint-extra: lldb=%s beef=%s returned=%s", (location + _Format(lldbAddrs)).c_str(), (location + _Format(beefAddrs)).c_str(), ShadowIsFlipped("breakpoint") ? "beef" : "lldb"));
+	}
+}
+
+static String ShadowEvalLine(const StringImpl& result, int lineIdx)
+{
+	int start = 0;
+	for (int i = 0; i < lineIdx; i++)
+	{
+		int nl = (int)result.IndexOf('\n', start);
+		if (nl == -1)
+			return String();
+		start = nl + 1;
+	}
+	int end = (int)result.IndexOf('\n', start);
+	if (end == -1)
+		end = (int)result.length();
+	return String(result.Substring(start, end - start));
+}
+
+static String ShadowNormalizeDisplay(const StringImpl& value)
+{
+	String result;
+	for (int i = 0; i < (int)value.length(); i++)
+	{
+		char c = value[i];
+		if ((c == '0') && (i + 1 < (int)value.length()) && (value[i + 1] == 'x'))
+		{
+			result += "0x";
+			i += 2;
+			while ((i < (int)value.length()) && ((value[i] == '\'') || (value[i] == '0')))
+				i++;
+			while ((i < (int)value.length()) && ((isxdigit((uint8)value[i])) || (value[i] == '\'')))
+			{
+				if (value[i] != '\'')
+					result += value[i];
+				i++;
+			}
+			i--;
+			continue;
+		}
+		result += c;
+	}
+	for (int nullIdx = (int)result.IndexOf("null"); nullIdx != -1; nullIdx = (int)result.IndexOf("null", nullIdx + 2))
+	{
+		bool startOk = (nullIdx == 0) || (result[nullIdx - 1] == '=') || (result[nullIdx - 1] == ' ');
+		bool endOk = (nullIdx + 4 >= (int)result.length()) || (result[nullIdx + 4] == ' ') || (result[nullIdx + 4] == ',');
+		if ((startOk) && (endOk))
+		{
+			result.Remove(nullIdx, 4);
+			result.Insert(nullIdx, "0x");
+		}
+	}
+	for (int strIdx = (int)result.IndexOf("=0x"); strIdx != -1; strIdx = (int)result.IndexOf("=0x", strIdx + 1))
+	{
+		int quoteIdx = strIdx + 3;
+		while ((quoteIdx < (int)result.length()) && (isxdigit((uint8)result[quoteIdx])))
+			quoteIdx++;
+		if ((quoteIdx + 1 < (int)result.length()) && (result[quoteIdx] == ' ') && (result[quoteIdx + 1] == '"'))
+			result.Remove(strIdx + 1, quoteIdx + 1 - (strIdx + 1));
+	}
+	for (int nameIdx = (int)result.IndexOf(" {"); nameIdx != -1; nameIdx = (int)result.IndexOf(" {", nameIdx + 1))
+	{
+		int parenIdx = (int)result.IndexOf('(', nameIdx);
+		int closeIdx = (parenIdx != -1) ? (int)result.IndexOf(")}", parenIdx) : -1;
+		if ((closeIdx != -1) && (!result.Substring(nameIdx + 2, parenIdx - nameIdx - 2).Contains(' ')) && (!result.Substring(nameIdx + 2, parenIdx - nameIdx - 2).Contains('=')))
+			result.Remove(nameIdx, closeIdx + 2 - nameIdx);
+	}
+	int funcParenIdx = (int)result.IndexOf('(');
+	if ((result.StartsWith("{")) && (result.EndsWith(")}")) && (funcParenIdx != -1) && (!result.Substring(1, funcParenIdx - 1).Contains(' ')))
+		result = "{0x}";
+	for (int openIdx = (int)result.IndexOf("{ "); openIdx != -1; openIdx = (int)result.IndexOf("{ ", openIdx + 1))
+	{
+		int closeIdx = (int)result.IndexOf(" }", openIdx + 2);
+		if (closeIdx == -1)
+			break;
+		String inner = result.Substring(openIdx + 2, closeIdx - openIdx - 2);
+		int eqIdx = (int)inner.IndexOf('=');
+		if ((eqIdx > 1) && (inner[0] == 'm') && (isupper((uint8)inner[1])) && (!inner.Contains(' ')) && (!inner.Contains('{')) && (inner.IndexOf('"') == -1))
+			result.Remove(openIdx + 2, eqIdx + 1);
+	}
+	result.Replace("{...}", "???");
+	if ((result.StartsWith("0x")) && (result.Contains(" \"")) && (result.EndsWith("\"")))
+		result.Remove(0, result.IndexOf(" \"") + 1);
+	for (int memberIdx = (int)result.IndexOf("=0x"); memberIdx != -1; memberIdx = (int)result.IndexOf("=0x", memberIdx + 3))
+	{
+		int braceIdx = memberIdx + 3;
+		while ((braceIdx < (int)result.length()) && (isxdigit((uint8)result[braceIdx])))
+			braceIdx++;
+		if ((braceIdx + 1 >= (int)result.length()) || (result[braceIdx] != ' ') || (result[braceIdx + 1] != '{'))
+			continue;
+		int depth = 0;
+		int endIdx = braceIdx + 1;
+		for (; endIdx < (int)result.length(); endIdx++)
+		{
+			if (result[endIdx] == '{')
+				depth++;
+			else if ((result[endIdx] == '}') && (--depth == 0))
+				break;
+		}
+		if (endIdx < (int)result.length())
+			result.Remove(braceIdx, endIdx + 1 - braceIdx);
+	}
+	while (result.Contains("{  }"))
+		result.Replace("{  }", "{ }");
+	for (int closeIdx = (int)result.IndexOf(")}"); closeIdx != -1; closeIdx = (int)result.IndexOf(")}", closeIdx + 2))
+	{
+		int openIdx = (int)result.LastIndexOf('(', closeIdx);
+		if (openIdx == -1)
+			continue;
+		result.Remove(openIdx + 1, closeIdx - openIdx - 1);
+		closeIdx = openIdx;
+	}
+	if (result.EndsWith(" { }"))
+		result.RemoveToEnd(result.length() - 4);
+	return result;
+}
+
+static String ShadowEvalValue(const StringImpl& result)
+{
+	if (result.StartsWith("!"))
+		return "!error";
+	return ShadowNormalizeDisplay(ShadowEvalLine(result, 0));
+}
+
+static String ShadowMemoryWatch(const StringImpl& result)
+{
+	if (result.StartsWith("!"))
+		return "!error";
+	uint64 addr = strtoull(ShadowEvalLine(result, 0).c_str(), NULL, 16);
+	return StrFormat("%llx %s", (unsigned long long)addr, ShadowEvalLine(result, 1).c_str());
+}
+
+void LLDBDebugger::ShadowCheckEval(const StringImpl& expr, int callStackIdx, int language, DwEvalExpressionFlags expressionFlags, const StringImpl& lldbResult)
+{
+	if ((lldbResult.StartsWith("!pending")) || (mDebugTarget == NULL) || (!mHostFramesLive))
+	{
+		mShadowQueryCounts["eval_skipped"]++;
+		return;
+	}
+
+	if (expr.Contains("*)0x"))
+	{
+		mShadowQueryCounts["eval_skipped"]++;
+		return;
+	}
+
+	if ((expr.Contains("__getHighBits")) || (expr.Contains("__clearHighBits")))
+	{
+		mShadowQueryCounts["eval_skipped"]++;
+		return;
+	}
+
+	DwEvalExpressionFlags beefFlags = (DwEvalExpressionFlags)(expressionFlags &
+		~(DwEvalExpressionFlag_AllowCalls | DwEvalExpressionFlag_AllowSideEffects | DwEvalExpressionFlag_AllowPropertyEval));
+	String beefResult = DbgTargetHost::Evaluate(expr, callStackIdx, -1, language, beefFlags);
+	if ((beefResult.StartsWith("!pending")) || (beefResult.StartsWith("!sideeffects")) || (beefResult.Contains("\n:sideeffects")))
+	{
+		mShadowQueryCounts["eval_skipped"]++;
+		return;
+	}
+
+	String prefix = StrFormat("%s => ", expr.c_str());
+	if ((expressionFlags & DwEvalExpressionFlag_MemoryWatch) != 0)
+	{
+		ShadowCompare("memwatch", prefix + ShadowMemoryWatch(lldbResult), prefix + ShadowMemoryWatch(beefResult));
+		return;
+	}
+	String lldbValue = ShadowEvalValue(lldbResult);
+	String beefValue = ShadowEvalValue(beefResult);
+	if (beefValue.EndsWith("... }"))
+	{
+		String shownPart = beefValue.Substring(0, beefValue.length() - 5);
+		if (lldbValue.StartsWith(shownPart))
+			lldbValue = beefValue;
+	}
+	if (lldbValue != beefValue)
+	{
+		const char* knownDifference = ShadowKnownEvalDifference(expr, lldbValue, beefValue);
+		if (knownDifference != NULL)
+		{
+			mShadowQueryCounts["eval_known"]++;
+			ShadowReportLine(StrFormat("DBGSHADOW eval-known (%s): lldb=%s beef=%s", knownDifference, (prefix + lldbValue).c_str(), (prefix + beefValue).c_str()));
+			return;
+		}
+	}
+	ShadowCompare("eval", prefix + lldbValue, prefix + beefValue);
+}
+
+static String ShadowEraseSingleValues(const StringImpl& value)
+{
+	String result = value;
+	for (int openIdx = (int)result.IndexOf("={ "); openIdx != -1; openIdx = (int)result.IndexOf("={ ", openIdx + 1))
+	{
+		int closeIdx = (int)result.IndexOf(" }", openIdx + 2);
+		if (closeIdx == -1)
+			break;
+		if (closeIdx == openIdx + 2)
+			continue;
+		String inner = result.Substring(openIdx + 3, closeIdx - openIdx - 3);
+		if ((!inner.Contains(' ')) && (!inner.Contains('{')))
+			result.Remove(openIdx + 3, closeIdx - openIdx - 2);
+	}
+	return result;
+}
+
+const char* LLDBDebugger::ShadowKnownEvalDifference(const StringImpl& expr, const StringImpl& lldbValue, const StringImpl& beefValue)
+{
+	if (lldbValue.Contains("={ }"))
+	{
+		String lldbErased = ShadowEraseSingleValues(lldbValue);
+		String beefErased = ShadowEraseSingleValues(beefValue);
+		if (beefErased.EndsWith("... }"))
+			beefErased.RemoveToEnd(beefErased.length() - 5);
+		if (lldbErased.StartsWith(beefErased))
+			return "lldb typed primitive";
+	}
+
+	if ((expr.StartsWith('@')) && (lldbValue == "!error"))
+		return "shadowed local";
+
+	if ((lldbValue.Contains("???")) && (beefValue.Contains("???")))
+		return "unreadable memory";
+
+	if (beefValue.Contains("={ data="))
+	{
+		String beefEvent = beefValue;
+		beefEvent.Replace("={ data=", "={ ");
+		if (ShadowEraseSingleValues(lldbValue) == ShadowEraseSingleValues(beefEvent))
+			return "event visualizer";
+	}
+
+	String qualifiedName = expr;
+	qualifiedName.Replace(".", "::");
+	for (auto& kv : mHotSymbols)
+	{
+		if (!kv.mValue.mIsTLS)
+			continue;
+		char* demangled = llvm::itaniumDemangle(std::string_view(kv.mKey.c_str(), kv.mKey.length()));
+		bool matches = (demangled != NULL) && (StringView(demangled).EndsWith("::" + qualifiedName));
+		free(demangled);
+		if (matches)
+			return "hot thread-local static";
+	}
+	return NULL;
+}
+
+void LLDBDebugger::ShadowCheckAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen, const StringImpl& lldbResult)
+{
+	if ((mDebugTarget == NULL) || (!mHostFramesLive))
+		return;
+	String beefResult = DbgTargetHost::GetAutoExpressions(callStackIdx, memoryRangeStart, memoryRangeLen);
+	Dictionary<String, String> beefEntries;
+	for (auto entryView : beefResult.Split('\n'))
+	{
+		String entry;
+		entry += entryView;
+		if (!entry.StartsWith("&"))
+			continue;
+		int tabIdx = (int)entry.IndexOf('\t');
+		if (tabIdx == -1)
+			continue;
+		beefEntries[String(entry.Substring(0, tabIdx))] = String(entry.Substring(tabIdx + 1));
+	}
+	String lldbEntries = lldbResult;
+	for (auto entryView : lldbEntries.Split('\n'))
+	{
+		String entry;
+		entry += entryView;
+		int tabIdx = (int)entry.IndexOf('\t');
+		if ((!entry.StartsWith("&")) || (tabIdx == -1))
+			continue;
+		String name = entry.Substring(0, tabIdx);
+		String* beefEntry = NULL;
+		if (!beefEntries.TryGetValue(name, &beefEntry))
+			continue;
+		ShadowCompare("autos_expr", entry, name + "\t" + *beefEntry);
 	}
 }
 
