@@ -62,7 +62,7 @@ static String ShadowInlineName(const StringImpl& name)
 }
 
 // LLDB hides artificial parameters (a lambda's __closure) as runtime support values, and DebugTarget gives a
-// repeated name an '@' per earlier use and cuts a "$a" alias suffix
+// repeated name an '@' per earlier use, cuts a "$a" alias suffix and lists a splatted parameter once by its own name
 static String ShadowLLDBAutos(lldb::SBFrame& frame)
 {
 	lldb::SBVariablesOptions options;
@@ -77,8 +77,18 @@ static String ShadowLLDBAutos(lldb::SBFrame& frame)
 	for (int i = 0; i < (int)variables.GetSize(); i++)
 	{
 		const char* namePtr = variables.GetValueAtIndex(i).GetName();
-		if ((namePtr == NULL) || (namePtr[0] == '$'))
+		if (namePtr == NULL)
 			continue;
+		if (namePtr[0] == '$')
+		{
+			const char* splatEnd = strchr(namePtr + 1, '$');
+			if (splatEnd == NULL)
+				continue;
+			String splatName(namePtr + 1, (int)(splatEnd - namePtr - 1));
+			if (!names.Contains(splatName))
+				names.Add(splatName);
+			continue;
+		}
 		String name = namePtr;
 		while (names.Contains(name))
 			name.Insert(0, '@');
