@@ -178,6 +178,21 @@ int LLDBDebugger::GetEvalThreadId()
 	return GetActiveThread();
 }
 
+bool LLDBDebugger::IsMemoryBreakpointSizeValid(addr_target addr, int size)
+{
+	return (size > 0) && (size <= 32);
+}
+
+bool LLDBDebugger::HasMemoryBreakpoint(addr_target addr, int size)
+{
+	for (auto bp : mBreakpoints)
+	{
+		if ((bp->mResolvedAddr == (uintptr)addr) && (bp->mMemoryBreakpointSize == size) && (!bp->mWatchpointIds.IsEmpty()))
+			return true;
+	}
+	return false;
+}
+
 String LLDBDebugger::GetActiveThreadName()
 {
 	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
