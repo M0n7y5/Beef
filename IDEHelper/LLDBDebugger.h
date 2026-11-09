@@ -17,6 +17,7 @@
 #pragma warning(disable:4251)
 #include "lldb/API/LLDB.h"
 #include "DbgTargetHost.h"
+#include "DbgCallConvSysV.h"
 #include <atomic>
 
 NS_BF_BEGIN
@@ -91,6 +92,8 @@ public:
 	bool mCallStackDirty;
 	bool mHostFramesLive;
 	CPURegisters mSavedRegisters;
+	Array<NS_BF_DBG::DbgSysVPart> mEvalReturnParts;
+	addr_target mEvalReturnSlot;                    // 0 for an sret return
 	bool mHasSavedRegisters;
 	Array<int> mHostFrameMap;
 	Array<int> mHostFrameGroupStart;                // per concrete frame: the index in mLLDBFrames of its innermost inlined frame

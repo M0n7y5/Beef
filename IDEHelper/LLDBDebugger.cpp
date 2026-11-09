@@ -162,6 +162,7 @@ LLDBDebugger::LLDBDebugger(DebugManager* debugManager)
 	mHostUnsupportedCount = 0;
 	mHostFramesLive = false;
 	mHasSavedRegisters = false;
+	mEvalReturnSlot = 0;
 	// mDebugTarget stays NULL until a session starts, and the evaluator needs primitive types before that
 	mEmptyDebugTarget = new DebugTarget(this);
 	mEmptyDebugTarget->CreateEmptyTarget();
