@@ -5428,6 +5428,14 @@ lldb::SBValue LLDBDebugger::EvaluateInThisContext(lldb::SBFrame& frame, const St
 
 String LLDBDebugger::Evaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags)
 {
+	String result = LLDBEvaluate(expr, callStackIdx, cursorPos, language, expressionFlags);
+	if ((mShadowEnabled) && (cursorPos < 0))
+		ShadowCheckEval(expr, callStackIdx, language, expressionFlags, result);
+	return result;
+}
+
+String LLDBDebugger::LLDBEvaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags)
+{
 	LLDBLog("Evaluate '%s'\n", expr.c_str());
 
 	if (!mLLDBProcess.IsValid())
@@ -7519,6 +7527,14 @@ String LLDBDebugger::GetCollectionContinuation(const StringImpl& continuationDat
 }
 
 String LLDBDebugger::GetAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen)
+{
+	String result = LLDBGetAutoExpressions(callStackIdx);
+	if (mShadowEnabled)
+		ShadowCheckAutoExpressions(callStackIdx, memoryRangeStart, memoryRangeLen, result);
+	return result;
+}
+
+String LLDBDebugger::LLDBGetAutoExpressions(int callStackIdx)
 {
 	AutoCrit autoCrit(mDebugManager->mCritSect);
 

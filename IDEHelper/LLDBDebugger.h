@@ -423,6 +423,11 @@ protected:
 	void ShadowCheckTLS();
 	void ShadowCheckLineCalls(addr_target pc);
 	void ShadowCheckBreakpoint(LLDBBreakpoint* bp);
+	void ShadowCheckEval(const StringImpl& expr, int callStackIdx, int language, DwEvalExpressionFlags expressionFlags, const StringImpl& lldbResult);
+	void ShadowCheckAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen, const StringImpl& lldbResult);
+	String LLDBEvaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags);
+	String LLDBGetAutoExpressions(int callStackIdx);
+	const char* ShadowKnownEvalDifference(const StringImpl& expr, const StringImpl& lldbValue, const StringImpl& beefValue);
 	void ShadowWriteReport();
 
 public:
