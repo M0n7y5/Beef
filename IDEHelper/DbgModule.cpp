@@ -1085,6 +1085,7 @@ DbgType::DbgType()
 	mTypeName = NULL;
 	mTypeCode = DbgType_Null;
 	mSize = 0;
+	mSizeIsStride = false;
 	mPtrType = NULL;
 	mTypeParam = NULL;
 	mBlockParam = NULL;
@@ -2094,6 +2095,20 @@ intptr DbgType::GetByteCount()
 					mSize = primaryType->GetByteCount();
 					mAlign = primaryType->mAlign;
 				}
+			}
+			if (mSizeIsStride)
+			{
+				mSizeCalculated = true;
+				intptr dataSize = 0;
+				for (auto baseTypeEntry : mBaseTypes)
+					dataSize = BF_MAX(dataSize, (intptr)baseTypeEntry->mThisOffset + baseTypeEntry->mBaseType->GetByteCount());
+				for (auto member : mMemberList)
+				{
+					if ((!member->mIsStatic) && (member->mType != NULL))
+						dataSize = BF_MAX(dataSize, (intptr)member->mMemberOffset + member->mType->GetByteCount());
+				}
+				if ((dataSize > 0) && (dataSize < mSize))
+					mSize = dataSize;
 			}
 		}
 		else if ((mTypeCode == DbgType_Ref) || (mTypeCode == DbgType_Ptr) || (mTypeCode == DbgType_PtrToMember))
@@ -4710,7 +4725,11 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				if (atByteSize != -1)
 				{
 					dbgType->mSize = atByteSize;
-					dbgType->mSizeCalculated = true;
+					// For a Beef value type DWARF's byte size is the stride, but sizeof is the data size
+					if ((entryTag == DW_TAG_structure_type) && (atByteSize > 0) && (compileUnit->mLanguage == DbgLanguage_Beef))
+						dbgType->mSizeIsStride = true;
+					else
+						dbgType->mSizeCalculated = true;
 				}
 				if ((atAlignment > 0) && (compileUnit->mLanguage == DbgLanguage_Beef))
 					dbgType->mAlign = atAlignment;
