@@ -1086,6 +1086,7 @@ DbgType::DbgType()
 	mTypeCode = DbgType_Null;
 	mSize = 0;
 	mSizeIsStride = false;
+	mSizeIsCount = false;
 	mPtrType = NULL;
 	mTypeParam = NULL;
 	mBlockParam = NULL;
@@ -2118,6 +2119,14 @@ intptr DbgType::GetByteCount()
 #else
 			mSize = 8;
 #endif
+		}
+		else if ((mTypeCode == DbgType_SizedArray) && (mSizeIsCount))
+		{
+			// mSize holds the element count, and the byte count omits the last element's padding as CodeView does
+			auto primaryType = mTypeParam->GetPrimaryType();
+			intptr elemCount = mSize;
+			mSize = (elemCount > 0) ? ((elemCount - 1) * primaryType->GetStride()) + primaryType->GetByteCount() : 0;
+			mAlign = primaryType->GetAlign();
 		}
 		else if (mTypeCode == DbgType_SizedArray)
 		{
@@ -3620,6 +3629,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					break;
 				}
 				arrType->mSize = deferredArrayDims[0]; // Byte count still needs to be multiplied by the underlying type size
+				arrType->mSizeIsCount = compileUnit->mLanguage == DbgLanguage_Beef;
 
 				DbgType* rootArrType = arrType;
 				for (int dimIdx = 0; dimIdx < (int)deferredArrayDims.size() - 1; dimIdx++)
@@ -3635,6 +3645,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					subArrType->mTypeCode = DbgType_SizedArray;
 					subArrType->mTypeParam = arrType->mTypeParam;
 					subArrType->mSize = deferredArrayDims[dimIdx + 1];
+					subArrType->mSizeIsCount = arrType->mSizeIsCount;
 
 					arrType->mTypeParam = subArrType;
 					arrType = subArrType;
