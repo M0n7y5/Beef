@@ -199,7 +199,6 @@ public:
 	virtual String GetAddressSourceLocation(intptr address) override;
 	virtual String GetAddressSymbolName(intptr address, bool demangle) override;
 
-	static void CreateFilterName(String& name, DbgType* type);
 	static void CreateFilterName(String& name, const char* srcStr, DbgLanguage language);
 	static void CreateFilterName(String& name, DbgSubprogram* subprogram);
 
