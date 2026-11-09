@@ -425,6 +425,9 @@ public:
 	virtual void SetThisRegister(CPURegisters* registers, addr_target val) override;
 	virtual void AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const DbgTypedValue& typedValue) override;
 	virtual bool CheckNeedsSRetArgument(DbgType* retType) override;
+	virtual int GetEvalStackReserve() override;
+	virtual addr_target GetEvalReturnAddress() override;
+	virtual bool SetupCallArgs(DbgSubprogram* method, SizedArrayImpl<DbgMethodArgument>& argPushQueue, const DbgTypedValue& structRetVal, CPURegisters* registers, DbgTypedValue& outThisVal, String& outError) override;
 	virtual DbgTypedValue ReadReturnValue(CPURegisters* registers, DbgType* type) override;
 	virtual bool SetRegisters(CPURegisters* registers) override;
 	virtual void SaveAllRegisters() override;

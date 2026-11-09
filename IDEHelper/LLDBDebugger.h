@@ -567,6 +567,9 @@ public:
 	virtual void SetThisRegister(CPURegisters* registers, addr_target val) override;
 	virtual void AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const NS_BF_DBG::DbgTypedValue& typedValue) override;
 	virtual bool CheckNeedsSRetArgument(NS_BF_DBG::DbgType* retType) override;
+	virtual int GetEvalStackReserve() override;
+	virtual addr_target GetEvalReturnAddress() override;
+	virtual bool SetupCallArgs(NS_BF_DBG::DbgSubprogram* method, SizedArrayImpl<NS_BF_DBG::DbgMethodArgument>& argPushQueue, const NS_BF_DBG::DbgTypedValue& structRetVal, NS_BF_DBG::CPURegisters* registers, NS_BF_DBG::DbgTypedValue& outThisVal, String& outError) override;
 	virtual NS_BF_DBG::DbgTypedValue ReadReturnValue(CPURegisters* registers, NS_BF_DBG::DbgType* type) override;
 	virtual bool WantsHotHeap() override;
 	virtual addr_target ReserveHotHeapMemory(addr_target address, int size) override;
