@@ -3587,6 +3587,8 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 	Array<AbstractOriginEntry> abstractOriginReplaceList;
 
 	Array<int> deferredArrayDims;
+	HashSet<DbgSubprogram*> splatSubprograms;
+	Dictionary<String, DbgSubprogram*> declSubprograms;
 	bool wantsInlineContexts = WantsDwarfInlineContexts();
 	Array<DbgInlineeRange> dieInlineeRanges;
 
@@ -4140,6 +4142,8 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					subProgram->mName = atName;
 
 					subProgram->mLinkName = atLinkageName;
+					if ((atDeclaration) && (atLinkageName != NULL) && (compileUnit->mLanguage == DbgLanguage_Beef))
+						declSubprograms[atLinkageName] = subProgram;
 					if (atAbstractOrigin != 0)
 					{
 						DbgSubprogram* originSubProgram = GetOrCreate<DbgSubprogram*>(atAbstractOrigin, dataMap);
@@ -4486,6 +4490,8 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				dwVariable->mLocationLen = (int)atLocationLen;
 				dwVariable->mLocationData = atLocationData;
 				dwVariable->mType = GetOrCreateType(atType, dataMap);
+				if ((atName != NULL) && (atName[0] == '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
+					splatSubprograms.Add(dwSubprogram);
 
 				if (atAbstractOrigin != 0)
 				{
@@ -4980,6 +4986,64 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 
 	for (auto& abstractOriginEntry : abstractOriginReplaceList)
 		abstractOriginEntry.Replace();
+
+	// CodeView gives each splatted parameter a location-less variable that the evaluator expands into its "$name$" fields;
+	// DWARF has only the fields, so the variable is added here, typed by the matching parameter of the declaration
+	for (auto subprogram : splatSubprograms)
+	{
+		Array<DbgType*> declTypes;
+		DbgSubprogram* declSubprogram = NULL;
+		if ((subprogram->mLinkName != NULL) && (declSubprograms.TryGetValue(subprogram->mLinkName, &declSubprogram)))
+		{
+			for (auto param : declSubprogram->mParams)
+				declTypes.Add(param->mType);
+		}
+		Array<DbgVariable*> params;
+		for (auto param : subprogram->mParams)
+			params.Add(param);
+		int declIdx = 0;
+		String lastSplatName;
+		for (auto param : params)
+		{
+			if ((param->mName == NULL) || (param->mName[0] != '$'))
+			{
+				lastSplatName.Clear();
+				declIdx++;
+				continue;
+			}
+			const char* nameEnd = strchr(param->mName + 1, '$');
+			if (nameEnd == NULL)
+				continue;
+			String splatName(param->mName + 1, (int)(nameEnd - param->mName - 1));
+			if (splatName == lastSplatName)
+				continue;
+			lastSplatName = splatName;
+			DbgType* declType = (declIdx < declTypes.mSize) ? declTypes[declIdx] : NULL;
+			declIdx++;
+			DbgType* splatType = (splatName == "this") ? subprogram->mParentType : declType;
+			if (splatType == NULL)
+				continue;
+			bool exists = false;
+			for (auto checkParam : params)
+				if ((checkParam->mName != NULL) && (splatName == checkParam->mName))
+					exists = true;
+			if (exists)
+				continue;
+			DbgVariable* splatVariable = mAlloc.Alloc<DbgVariable>();
+			splatVariable->mCompileUnit = compileUnit;
+			splatVariable->mIsParam = true;
+			splatVariable->mIsConst = true;
+			splatVariable->mName = DbgDupString(splatName.c_str());
+			splatVariable->mType = splatType;
+			if (splatName == "this")
+			{
+				subprogram->mParams.PushFront(splatVariable);
+				subprogram->mHasThis = true;
+			}
+			else
+				subprogram->mParams.PushBack(splatVariable);
+		}
+	}
 
 	// The base type's name is only known once the unit is read
 	if (compileUnit->mLanguage == DbgLanguage_Beef)
