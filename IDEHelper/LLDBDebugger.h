@@ -545,6 +545,8 @@ public:
 	virtual bool IsMiniDumpDebugger() override;
 	virtual int GetActiveThreadId() override;
 	virtual int GetEvalThreadId() override;
+	virtual bool IsMemoryBreakpointSizeValid(addr_target addr, int size) override;
+	virtual bool HasMemoryBreakpoint(addr_target addr, int size) override;
 	virtual String GetActiveThreadName() override;
 	virtual void ClearExplicitStopThread() override;
 	virtual int GetActiveBreakpointHitCount() override;
