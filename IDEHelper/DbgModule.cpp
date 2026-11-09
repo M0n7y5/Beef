@@ -7582,7 +7582,8 @@ bool DbgModule::ResolveTLSAddress(addr_target operand, CPURegisters* registers, 
 
 addr_target DbgModule::ExecuteOps(DbgSubprogram* dwSubprogram, const uint8* locData, int locDataLen, WdStackFrame* stackFrame, CPURegisters* registers, DbgAddrType* outAddrType, DbgEvalLocFlags flags, addr_target* pushValue)
 {
-	bool allowReg = (flags & DbgEvalLocFlag_IsParam) == 0;
+	// DW_OP_fbreg needs the frame base as an address, never a register number
+	bool allowReg = (flags & (DbgEvalLocFlag_IsParam | DbgEvalLocFlag_DisallowReg)) == 0;
 
 	const uint8* locDataEnd = locData + locDataLen;
 	int regNum = -1;
