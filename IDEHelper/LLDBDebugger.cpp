@@ -161,6 +161,7 @@ LLDBDebugger::LLDBDebugger(DebugManager* debugManager)
 	mPageSize = (int)sysconf(_SC_PAGESIZE);
 	mHostUnsupportedCount = 0;
 	mHostFramesLive = false;
+	mHasSavedRegisters = false;
 	mHostThreadLocalsModule = NULL;
 	ShadowInit();
 	mDidAttach = false;

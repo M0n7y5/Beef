@@ -90,6 +90,8 @@ public:
 	Array<lldb::SBFrame> mLLDBFrames;
 	bool mCallStackDirty;
 	bool mHostFramesLive;
+	CPURegisters mSavedRegisters;
+	bool mHasSavedRegisters;
 	Array<int> mHostFrameMap;
 	Array<int> mHostFrameGroupStart;                // per concrete frame: the index in mLLDBFrames of its innermost inlined frame
 
@@ -548,7 +550,6 @@ public:
 	virtual String GetActiveBreakpointCondition() override;
 	virtual int GetTargetProcessId() override;
 	virtual bool PopulateRegisters(CPURegisters* registers) override;
-	virtual NS_BF_DBG::DbgTypedValue GetRegister(const StringImpl& regName, DbgLanguage language, CPURegisters* registers, Array<RegForm>* regForms = NULL) override;
 	virtual bool AssignToReg(int callStackIdx, NS_BF_DBG::DbgTypedValue reg, NS_BF_DBG::DbgTypedValue value, String& outError) override;
 	virtual bool SetRegisters(CPURegisters* registers) override;
 	virtual void SaveAllRegisters() override;
@@ -559,7 +560,6 @@ public:
 	virtual void AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const NS_BF_DBG::DbgTypedValue& typedValue) override;
 	virtual bool CheckNeedsSRetArgument(NS_BF_DBG::DbgType* retType) override;
 	virtual NS_BF_DBG::DbgTypedValue ReadReturnValue(CPURegisters* registers, NS_BF_DBG::DbgType* type) override;
-	virtual bool ProcessEvalString(NS_BF_DBG::DbgCompileUnit* dbgCompileUnit, NS_BF_DBG::DbgTypedValue useTypedValue, String& evalStr, String& displayString, NS_BF_DBG::DwFormatInfo& formatInfo, DebugVisualizerEntry* debugVis, bool limitLength) override;
 	virtual bool WantsHotHeap() override;
 	virtual addr_target ReserveHotHeapMemory(addr_target address, int size) override;
 	virtual void ReleaseHotHeapMemory(addr_target address) override;
