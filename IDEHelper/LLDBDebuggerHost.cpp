@@ -173,6 +173,11 @@ int LLDBDebugger::GetActiveThreadId()
 	return GetActiveThread();
 }
 
+int LLDBDebugger::GetEvalThreadId()
+{
+	return GetActiveThread();
+}
+
 String LLDBDebugger::GetActiveThreadName()
 {
 	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))

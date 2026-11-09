@@ -162,6 +162,9 @@ LLDBDebugger::LLDBDebugger(DebugManager* debugManager)
 	mHostUnsupportedCount = 0;
 	mHostFramesLive = false;
 	mHasSavedRegisters = false;
+	mEmptyDebugTarget = new DebugTarget(this);
+	mEmptyDebugTarget->CreateEmptyTarget();
+	mEmptyDebugTarget->mIsEmpty = true;
 	mHostThreadLocalsModule = NULL;
 	ShadowInit();
 	mDidAttach = false;
@@ -207,6 +210,7 @@ LLDBDebugger::~LLDBDebugger()
 	HotRemoveDebugInfo();
 	for (auto bp : mBreakpoints)
 		delete bp;
+	delete mEmptyDebugTarget;
 }
 
 void LLDBDebugger::DumpSymbolAddrs(const StringImpl& sym)
@@ -861,6 +865,7 @@ void LLDBDebugger::WaitForLaunchThread()
 
 void LLDBDebugger::Run()
 {
+	mIsRunning = true;
 	// Kick off the background launch thread if OpenFile has stored params for us.
 	if (!mLaunchPath.IsEmpty())
 		mLaunchThread = BfpThread_Create(LaunchThreadProc, (void*)this, 128 * 1024, BfpThreadCreateFlag_StackSizeReserve);
@@ -10163,6 +10168,7 @@ void LLDBDebugger::Detach()
 {
 	InterruptPendingEval("Detach");
 	LLDBLog("Detach\n");
+	mIsRunning = false;
 
 	WaitForLaunchThread();
 
