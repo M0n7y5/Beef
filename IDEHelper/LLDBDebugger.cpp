@@ -34,6 +34,8 @@ USING_NS_BF_DBG;
 
 // Hot swap layout
 static const uint64 HOT_HEAP_RESERVE_SIZE = 64 * 1024 * 1024;
+// A call waiting on a stopped thread would otherwise hang the IDE
+static const uint32 BEEF_EVAL_TIMEOUT_MS = 5000;
 static const uint64 HOT_HEAP_EXE_GAP = 256 * 1024 * 1024; // Room for brk heap growth past the executable
 static const int HOT_JMP_REL32_SIZE = 5;
 static const int HOT_JMP_ABS64_SIZE = 14;
@@ -162,7 +164,13 @@ LLDBDebugger::LLDBDebugger(DebugManager* debugManager)
 	mHostUnsupportedCount = 0;
 	mHostFramesLive = false;
 	mHasSavedRegisters = false;
+	mSavedRegisterThreadId = 0;
 	mEvalReturnSlot = 0;
+	const char* evalEnv = getenv("BEEF_DBG_EVAL");
+	mBeefEval = (evalEnv != NULL) && (strcmp(evalEnv, "beef") == 0);
+	mEvalTrapAddr = 0;
+	mEvalThreadId = 0;
+	mEvalStartTick = 0;
 	// mDebugTarget stays NULL until a session starts, and the evaluator needs primitive types before that
 	mEmptyDebugTarget = new DebugTarget(this);
 	mEmptyDebugTarget->CreateEmptyTarget();
@@ -927,6 +935,12 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 		if (mLLDBProcess.GetState() != lldb::eStateStopped)
 			return;
 
+		if (IsBeefCallRunning())
+		{
+			HostHandleBeefCallStop();
+			return;
+		}
+
 		if ((mRunState == RunState_Running) || (mRunState == RunState_Running_ToTempBreakpoint))
 		{
 			// On the first stop after launch (stop-at-entry), the process image is
@@ -1207,8 +1221,19 @@ void LLDBDebugger::Update()
 	if ((mRunState == RunState_NotStarted) || (mRunState == RunState_Terminating) || (mRunState == RunState_Terminated))
 		return;
 
+	if (IsBeefCallRunning())
+	{
+		if (BfpSystem_TickCount() - mEvalStartTick > BEEF_EVAL_TIMEOUT_MS)
+			HostCancelBeefCall("Evaluation timed out");
+	}
+	else if ((mDebugPendingExpr != NULL) && (IsPausedState()))
+	{
+		if (++mDebugPendingExpr->mIdleTicks >= 2)
+			FinishPendingEval();
+	}
+
 	// The pending evaluation's thread holds the target lock until its call returns
-	if (mRunState == RunState_DebugEval)
+	if ((mRunState == RunState_DebugEval) && (mPendingEval != NULL))
 	{
 		if (!mPendingEval->mDone)
 		{
@@ -1294,6 +1319,11 @@ void LLDBDebugger::BreakAll()
 {
 	if (!mLLDBProcess.IsValid())
 		return;
+	if (IsBeefCallRunning())
+	{
+		HostCancelBeefCall("Evaluation canceled");
+		return;
+	}
 	if (mRunState == RunState_DebugEval)
 	{
 		// LLDB unwinds the interrupted call and restores the thread's state
@@ -5429,6 +5459,20 @@ lldb::SBValue LLDBDebugger::EvaluateInThisContext(lldb::SBFrame& frame, const St
 
 String LLDBDebugger::Evaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags)
 {
+	if (mBeefEval)
+	{
+		if ((expressionFlags & DwEvalExpressionFlag_AllowCalls) != 0)
+		{
+			String trapError;
+			if (!HostEnsureEvalTrap(trapError))
+				return "!" + trapError;
+		}
+		String beefResult = DbgTargetHost::Evaluate(expr, callStackIdx, cursorPos, language, expressionFlags);
+		if (beefResult == "!pending")
+			HostRunBeefCall();
+		return beefResult;
+	}
+
 	String result = LLDBEvaluate(expr, callStackIdx, cursorPos, language, expressionFlags);
 	if ((mShadowEnabled) && (cursorPos < 0))
 		ShadowCheckEval(expr, callStackIdx, language, expressionFlags, result);
@@ -5527,11 +5571,16 @@ void LLDBDebugger::CleanupPendingEval()
 // changes interrupt the evaluation, rather than block until a call that may never return does
 bool LLDBDebugger::IsTargetBusy()
 {
-	return (mRunState == RunState_DebugEval) && (BfpThread_GetCurrentId() != mPendingEval->mWorkerThreadId);
+	return (mRunState == RunState_DebugEval) && ((mPendingEval == NULL) || (BfpThread_GetCurrentId() != mPendingEval->mWorkerThreadId));
 }
 
 void LLDBDebugger::InterruptPendingEval(const char* caller)
 {
+	if (IsBeefCallRunning())
+	{
+		HostCancelBeefCall("Evaluation canceled");
+		return;
+	}
 	if (!IsTargetBusy())
 		return;
 	LLDBLog("Interrupting pending evaluation on thread %llu (%s)\n", (unsigned long long)mPendingEval->mThreadId, caller);
@@ -7491,6 +7540,14 @@ String LLDBDebugger::RewriteBeefMemberAccess(lldb::SBFrame& frame, const StringI
 
 String LLDBDebugger::EvaluateContinue()
 {
+	if (mBeefEval)
+	{
+		String beefResult = DbgTargetHost::EvaluateContinue();
+		if (beefResult == "!pending")
+			HostRunBeefCall();
+		return beefResult;
+	}
+
 	if (mPendingEval == NULL)
 		return "!Evaluation canceled";
 	if (!IsPausedState())
@@ -7503,6 +7560,12 @@ String LLDBDebugger::EvaluateContinue()
 
 void LLDBDebugger::EvaluateContinueKeep()
 {
+	if (mBeefEval)
+	{
+		DbgTargetHost::EvaluateContinueKeep();
+		return;
+	}
+
 	if (mPendingEval != NULL)
 		mPendingEval->mIdleTicks = 0;
 }
@@ -7748,6 +7811,8 @@ static void HotWriteAbsJump(uint8* dest, uint64 target)
 
 void LLDBDebugger::HotResetState()
 {
+	mEvalTrapAddr = 0;
+	mEvalTrapBreakpoint = lldb::SBBreakpoint();
 	mHotHeapStart = 0;
 	mHotHeapSize = 0;
 	mHotHeapUsed = 0;

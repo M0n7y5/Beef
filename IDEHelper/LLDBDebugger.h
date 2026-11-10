@@ -94,7 +94,14 @@ public:
 	CPURegisters mSavedRegisters;
 	Array<NS_BF_DBG::DbgSysVPart> mEvalReturnParts;
 	addr_target mEvalReturnSlot;                    // 0 for an sret return
+	bool mBeefEval;                                 // BEEF_DBG_EVAL=beef: the IDE gets Beef's evaluator answers (test use)
+	addr_target mEvalTrapAddr;
+	lldb::SBBreakpoint mEvalTrapBreakpoint;
+	uint64 mEvalThreadId;
+	uint32 mEvalStartTick;
 	bool mHasSavedRegisters;
+	String mSavedRegisterStateId;
+	uint64 mSavedRegisterThreadId;
 	Array<int> mHostFrameMap;
 	Array<int> mHostFrameGroupStart;                // per concrete frame: the index in mLLDBFrames of its innermost inlined frame
 
@@ -553,6 +560,13 @@ public:
 	virtual bool IsMiniDumpDebugger() override;
 	virtual int GetActiveThreadId() override;
 	virtual int GetEvalThreadId() override;
+	virtual void FinishPendingEval() override;
+	bool HostEnsureEvalTrap(String& outError);
+	void HostRunBeefCall();
+	String HostSendThreadPacket(const StringImpl& packet);
+	void HostHandleBeefCallStop();
+	void HostCancelBeefCall(const StringImpl& reason);
+	bool IsBeefCallRunning();
 	virtual bool IsMemoryBreakpointSizeValid(addr_target addr, int size) override;
 	virtual bool HasMemoryBreakpoint(addr_target addr, int size) override;
 	virtual String GetActiveThreadName() override;
