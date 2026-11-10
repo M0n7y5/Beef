@@ -5372,7 +5372,8 @@ void DbgExprEvaluator::LookupSplatMember(BfAstNode* targetNode, BfAstNode* looku
 
 	if (found)
 	{
-		bool wantConst = ((valWasConst) && (!memberType->IsConst()) && (!memberType->IsRef()));
+		// StoreValue writes CodeView's splat pieces because they are registers. DWARF's are in memory and would be read-only.
+		bool wantConst = ((valWasConst) && (!memberType->IsConst()) && (!memberType->IsRef()) && (GetFlavor() == DbgFlavor_MS));
 		if (!findName.StartsWith("$"))
 			findName = "$" + findName;
 		if (wasUnion)
