@@ -3,8 +3,6 @@ GotoText("Assembly.Test();")
 ToggleBreakpoint()
 RunWithCompiling()
 
-if (platform == "Linux64") Stop()
-
 AssertEvalEquals("1 << 3", "8")
 AssertEvalContains("1 << 64", "Shift count out of range")
 AssertEvalContains("1 << -1", "Shift count out of range")

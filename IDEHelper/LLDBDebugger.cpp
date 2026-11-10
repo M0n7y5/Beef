@@ -165,8 +165,6 @@ LLDBDebugger::LLDBDebugger(DebugManager* debugManager)
 	mHasSavedRegisters = false;
 	mSavedRegisterThreadId = 0;
 	mEvalReturnSlot = 0;
-	const char* evalEnv = getenv("BEEF_DBG_EVAL");
-	mBeefEval = (evalEnv != NULL) && (strcmp(evalEnv, "beef") == 0);
 	mEvalTrapAddr = 0;
 	mEvalThreadId = 0;
 	mEvalStartTick = 0;
@@ -1098,26 +1096,17 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 					}
 					if (!conditionBp->mBeefCondition.IsEmpty())
 					{
-						// The breakpoint only counts as hit when its condition holds. As in WinDebugger, a
-						// condition that can't be evaluated stops the program rather than being ignored.
 						ClearCallStack();
 						mRunState = RunState_Breakpoint;
-						UpdateCallStack();
-						String result = Evaluate(conditionBp->mBeefCondition, 0, -1, -1,
-							(DwEvalExpressionFlags)(DwEvalExpressionFlag_AllowSideEffects | DwEvalExpressionFlag_AllowCalls));
-						LLDBLog("Breakpoint condition '%s' -> '%s'\n", conditionBp->mBeefCondition.c_str(), result.c_str());
-						int newlineIdx = (int)result.IndexOf('\n');
-						String conditionValue = (newlineIdx != -1) ? result.Substring(0, newlineIdx) : result;
-						conditionValue.Trim();
-						if ((conditionValue == "false") || (conditionValue == "0"))
+						bool conditionHolds = HostCheckBreakpointCondition(conditionBp);
+						ClearCallStack();
+						if (!conditionHolds)
 						{
-							ClearCallStack();
 							mActiveBreakpoint = NULL;
 							mRunState = RunState_Running;
 							mLLDBProcess.Continue();
 							return;
 						}
-						ClearCallStack();
 					}
 					head->mHitCount++;
 
@@ -1128,8 +1117,7 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 					{
 						ClearCallStack();
 						mRunState = RunState_Breakpoint;
-						UpdateCallStack();
-						mDebugManager->mOutMessages.push_back("log " + BuildBreakpointLogText(loggingBp->mBeefLogging) + "\n");
+						mDebugManager->mOutMessages.push_back(HostBreakpointLogText(loggingBp->mBeefLogging));
 						ClearCallStack();
 						if (!loggingBp->mBreakAfterLogging)
 							wantsStop = false;
@@ -2069,53 +2057,123 @@ void LLDBDebugger::SetBreakpointLogging(Breakpoint* wdBreakpoint, const StringIm
 	bp->mBreakAfterLogging = breakAfterLogging;
 }
 
-// A logging breakpoint's text, with each "{expr}" replaced by what it evaluates to ("{{" is a literal
-// brace), as WinDebugger builds it
-String LLDBDebugger::BuildBreakpointLogText(const StringImpl& logging)
+static void SplitBreakpointExpr(const StringImpl& expr, StringImpl& outExpr, StringImpl& outSubject)
 {
-	String result;
-	for (int i = 0; i < (int)logging.length(); i++)
+	int crPos = (int)expr.IndexOf('\n');
+	if (crPos != -1)
 	{
-		char c = logging[i];
-		if ((c == '{') && (i + 1 < (int)logging.length()) && (logging[i + 1] == '{'))
-		{
-			result += '{';
-			i++;
-			continue;
-		}
-		if (c != '{')
-		{
-			result += c;
-			continue;
-		}
-
-		int depth = 1;
-		int end = i + 1;
-		while ((end < (int)logging.length()) && (depth > 0))
-		{
-			if (logging[end] == '{')
-				depth++;
-			else if (logging[end] == '}')
-				depth--;
-			if (depth > 0)
-				end++;
-		}
-		String expr = logging.Substring(i + 1, end - i - 1);
-		String value = Evaluate(expr, 0, -1, -1, (DwEvalExpressionFlags)(DwEvalExpressionFlag_AllowSideEffects | DwEvalExpressionFlag_AllowCalls));
-		if (value.StartsWith("!"))
-		{
-			// "!<start>\t<length>\t<message>" - show just the message
-			int lastTab = (int)value.LastIndexOf('\t');
-			result += (lastTab != -1) ? value.Substring(lastTab + 1) : value.Substring(1);
-		}
-		else
-		{
-			int newlineIdx = (int)value.IndexOf('\n');
-			result += (newlineIdx != -1) ? value.Substring(0, newlineIdx) : value;
-		}
-		i = end;
+		outExpr += expr.Substring(0, crPos);
+		outSubject += expr.Substring(crPos + 1);
 	}
-	return result;
+	else
+		outExpr += expr;
+}
+
+bool LLDBDebugger::HostCheckBreakpointCondition(LLDBBreakpoint* bp)
+{
+	CPURegisters registers;
+	if (!PopulateRegisters(&registers))
+		return true;
+	DbgSubprogram* subprogram = mDebugTarget->FindSubProgram(registers.GetPC());
+	if (subprogram == NULL)
+		return false;
+
+	StringT<256> expr;
+	StringT<256> subjectExpr;
+	if (bp->mMemoryBreakpointSize > 0)
+		subjectExpr += "*";
+	SplitBreakpointExpr(bp->mBeefCondition, expr, subjectExpr);
+	DbgLanguage language = DbgLanguage_Unknown;
+	if (expr.StartsWith("@Beef:"))
+	{
+		expr.Remove(0, 6);
+		language = DbgLanguage_Beef;
+	}
+	else if (expr.StartsWith("@C:"))
+	{
+		expr.Remove(0, 3);
+		language = DbgLanguage_C;
+	}
+
+	DbgEvaluationContext context(this, subprogram->mCompileUnit->mDbgModule, expr);
+	if (language != DbgLanguage_Unknown)
+		context.mDbgExprEvaluator->mLanguage = language;
+	context.mDbgExprEvaluator->mSubjectExpr = subjectExpr;
+	context.mDbgExprEvaluator->mDbgCompileUnit = subprogram->mCompileUnit;
+	context.mDbgExprEvaluator->mCallStackIdx = 0;
+	context.mDbgExprEvaluator->mExpressionFlags = DwEvalExpressionFlag_AllowSideEffects;
+	UpdateCallStack();
+	DbgTypedValue result = context.EvaluateInContext(DbgTypedValue());
+
+	if ((result.mType != NULL) && (result.mType->mTypeCode == DbgType_Bitfield))
+		result.mType = result.mType->mTypeParam;
+
+	if (context.mPassInstance->HasFailed())
+	{
+		String errorStr = "FAILED";
+		for (auto error : context.mPassInstance->mErrors)
+		{
+			if (!error->mIsWarning)
+				errorStr = error->mError;
+		}
+		mDebugManager->mOutMessages.push_back(StrFormat("error Conditional breakpoint expression '%s' failed: %s", bp->mBeefCondition.c_str(), errorStr.c_str()));
+		return true;
+	}
+	if (context.mDbgExprEvaluator->mBlockedSideEffects)
+	{
+		mDebugManager->mOutMessages.push_back(StrFormat("error Conditional breakpoint expression '%s' contained function calls, which is not allowed", bp->mBeefCondition.c_str()));
+		return true;
+	}
+	if ((!result) || (!result.mType->IsBoolean()))
+	{
+		mDebugManager->mOutMessages.push_back(StrFormat("error Conditional breakpoint expression '%s' must result in a boolean value", bp->mBeefCondition.c_str()));
+		return true;
+	}
+	return result.mBool;
+}
+
+String LLDBDebugger::HostBreakpointLogText(const StringImpl& logging)
+{
+	DwFormatInfo formatInfo;
+	formatInfo.mCallStackIdx = 0;
+
+	CPURegisters registers;
+	DbgCompileUnit* dbgCompileUnit = NULL;
+	DbgSubprogram* dbgSubprogram = PopulateRegisters(&registers) ? mDebugTarget->FindSubProgram(registers.GetPC()) : NULL;
+	if (dbgSubprogram != NULL)
+	{
+		dbgCompileUnit = dbgSubprogram->mCompileUnit;
+		formatInfo.mLanguage = dbgSubprogram->GetLanguage();
+	}
+
+	auto prevRunState = mRunState;
+	mRunState = RunState_Paused;
+	String displayString;
+	String expr;
+	SplitBreakpointExpr(logging, expr, formatInfo.mSubjectExpr);
+	if (expr.StartsWith("@Script:"))
+	{
+		displayString = "script ";
+		displayString += expr.Substring(8);
+	}
+	else
+	{
+		if (expr.StartsWith("@Beef:"))
+		{
+			expr.Remove(0, 6);
+			formatInfo.mLanguage = DbgLanguage_Beef;
+		}
+		else if (expr.StartsWith("@C:"))
+		{
+			expr.Remove(0, 3);
+			formatInfo.mLanguage = DbgLanguage_C;
+		}
+		ProcessEvalString(dbgCompileUnit, DbgTypedValue(), expr, displayString, formatInfo, NULL, false);
+		displayString.Insert(0, "log ");
+		displayString.Append("\n");
+	}
+	mRunState = prevRunState;
+	return displayString;
 }
 
 Breakpoint* LLDBDebugger::FindBreakpointAt(intptr address)
@@ -5457,23 +5515,15 @@ lldb::SBValue LLDBDebugger::EvaluateInThisContext(lldb::SBFrame& frame, const St
 
 String LLDBDebugger::Evaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags)
 {
-	if (mBeefEval)
+	if ((expressionFlags & DwEvalExpressionFlag_AllowCalls) != 0)
 	{
-		if ((expressionFlags & DwEvalExpressionFlag_AllowCalls) != 0)
-		{
-			String trapError;
-			if (!HostEnsureEvalTrap(trapError))
-				return "!" + trapError;
-		}
-		String beefResult = DbgTargetHost::Evaluate(expr, callStackIdx, cursorPos, language, expressionFlags);
-		if (beefResult == "!pending")
-			HostRunBeefCall();
-		return beefResult;
+		String trapError;
+		if (!HostEnsureEvalTrap(trapError))
+			return "!" + trapError;
 	}
-
-	String result = LLDBEvaluate(expr, callStackIdx, cursorPos, language, expressionFlags);
-	if ((mShadowEnabled) && (cursorPos < 0))
-		ShadowCheckEval(expr, callStackIdx, language, expressionFlags, result);
+	String result = DbgTargetHost::Evaluate(expr, callStackIdx, cursorPos, language, expressionFlags);
+	if (result == "!pending")
+		HostRunBeefCall();
 	return result;
 }
 
@@ -7538,61 +7588,9 @@ String LLDBDebugger::RewriteBeefMemberAccess(lldb::SBFrame& frame, const StringI
 
 String LLDBDebugger::EvaluateContinue()
 {
-	if (mBeefEval)
-	{
-		String beefResult = DbgTargetHost::EvaluateContinue();
-		if (beefResult == "!pending")
-			HostRunBeefCall();
-		return beefResult;
-	}
-
-	if (mPendingEval == NULL)
-		return "!Evaluation canceled";
-	if (!IsPausedState())
-		return "!Not paused";
-	LLDBLog("EvaluateContinue finishing pending expr in thread %llu\n", (unsigned long long)mPendingEval->mThreadId);
-	String result = mPendingEval->mResult;
-	CleanupPendingEval();
-	return result;
-}
-
-void LLDBDebugger::EvaluateContinueKeep()
-{
-	if (mBeefEval)
-	{
-		DbgTargetHost::EvaluateContinueKeep();
-		return;
-	}
-
-	if (mPendingEval != NULL)
-		mPendingEval->mIdleTicks = 0;
-}
-
-String LLDBDebugger::EvaluateToAddress(const StringImpl& expr, int callStackIdx, int cursorPos)
-{
-	/*String evalExpr;
-	LLDBFormatInfo fmtInfo;
-	ParseExprAndFormat(expr, evalExpr, fmtInfo);
-	auto value = mLLDBFrames[callStackIdx].EvaluateExpression(evalExpr.c_str());
-	return FormatSBValueToResult(value, fmtInfo);*/
-	return Evaluate(expr, callStackIdx, cursorPos, /*unused*/ -1, (DwEvalExpressionFlags)0);
-}
-
-String LLDBDebugger::EvaluateAtAddress(const StringImpl& expr, intptr atAddr, int cursorPos)
-{
-	return Evaluate(expr, GetCallStackCount() - 1, cursorPos, /*unused*/ -1, (DwEvalExpressionFlags)0);
-}
-
-String LLDBDebugger::GetCollectionContinuation(const StringImpl& continuationData, int callStackIdx, int count)
-{
-	return String();
-}
-
-String LLDBDebugger::GetAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen)
-{
-	String result = LLDBGetAutoExpressions(callStackIdx);
-	if (mShadowEnabled)
-		ShadowCheckAutoExpressions(callStackIdx, memoryRangeStart, memoryRangeLen, result);
+	String result = DbgTargetHost::EvaluateContinue();
+	if (result == "!pending")
+		HostRunBeefCall();
 	return result;
 }
 
@@ -7662,11 +7660,6 @@ String LLDBDebugger::GetAutoLocals(int callStackIdx, bool showRegs)
 	}
 
 	return result;
-}
-
-String LLDBDebugger::CompactChildExpression(const StringImpl& expr, const StringImpl& parentExpr, int callStackIdx)
-{
-	return String();
 }
 
 //----------------------------------------------------------------------------

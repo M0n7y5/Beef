@@ -94,7 +94,6 @@ public:
 	CPURegisters mSavedRegisters;
 	Array<NS_BF_DBG::DbgSysVPart> mEvalReturnParts;
 	addr_target mEvalReturnSlot;
-	bool mBeefEval;
 	addr_target mEvalTrapAddr;
 	lldb::SBBreakpoint mEvalTrapBreakpoint;
 	uint64 mEvalThreadId;
@@ -341,7 +340,8 @@ protected:
 	String RewriteBeefMemberAccess(lldb::SBFrame& frame, const StringImpl& expr);
 	String RewriteBeefMemberAccessInSpan(lldb::SBFrame& frame, const StringImpl& expr);
 	bool IsClosingBraceLine(lldb::SBLineEntry& lineEntry);
-	String BuildBreakpointLogText(const StringImpl& logging);
+	bool HostCheckBreakpointCondition(LLDBBreakpoint* bp);
+	String HostBreakpointLogText(const StringImpl& logging);
 	lldb::SBType FindBeefType(lldb::SBFrame& frame, const StringImpl& name);
 	lldb::SBType FindBeefTypeAnywhere(const StringImpl& typeName);
 	lldb::SBValue EvaluateBeefTupleAssign(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
@@ -433,11 +433,8 @@ protected:
 	void ShadowCheckTLS();
 	void ShadowCheckLineCalls(addr_target pc);
 	void ShadowCheckBreakpoint(LLDBBreakpoint* bp);
-	void ShadowCheckEval(const StringImpl& expr, int callStackIdx, int language, DwEvalExpressionFlags expressionFlags, const StringImpl& lldbResult);
-	void ShadowCheckAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen, const StringImpl& lldbResult);
 	String LLDBEvaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags);
 	String LLDBGetAutoExpressions(int callStackIdx);
-	const char* ShadowKnownEvalDifference(const StringImpl& expr, const StringImpl& lldbValue, const StringImpl& beefValue);
 	void ShadowWriteReport();
 
 public:
@@ -499,13 +496,7 @@ public:
 	virtual void SetNextStatement(bool inAssembly, const StringImpl& fileName, int64 lineNumOrAsmAddr, int wantColumn) override;
 	virtual String Evaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags) override;
 	virtual String EvaluateContinue() override;
-	virtual void EvaluateContinueKeep() override;
-	virtual String EvaluateToAddress(const StringImpl& expr, int callStackIdx, int cursorPos) override;
-	virtual String EvaluateAtAddress(const StringImpl& expr, intptr atAddr, int cursorPos) override;
-	virtual String GetCollectionContinuation(const StringImpl& continuationData, int callStackIdx, int count) override;
-	virtual String GetAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen) override;
 	virtual String GetAutoLocals(int callStackIdx, bool showRegs) override;
-	virtual String CompactChildExpression(const StringImpl& expr, const StringImpl& parentExpr, int callStackIdx) override;
 	virtual String GetProcessInfo() override;
 	virtual int GetProcessId() override;
 	virtual String GetThreadInfo() override;

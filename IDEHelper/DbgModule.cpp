@@ -5125,7 +5125,10 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		for (auto param : newParams)
 			subprogram->mParams.PushBack(param);
 		for (auto field : splatFields)
+		{
+			field->mIsParam = false;
 			subprogram->mBlock.mVariables.PushBack(field);
+		}
 		for (auto variable : locals)
 			subprogram->mBlock.mVariables.PushBack(variable);
 	}

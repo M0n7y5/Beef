@@ -152,6 +152,15 @@ addr_target ElfDbgModule::RemapAddr(addr_target addr)
 	return addr + (addr_target)(mImageBase - mPreferredImageBase);
 }
 
+bool ElfDbgModule::DbgIsStrMutable(const char* str)
+{
+	if ((mMappedFile.mData != NULL) && (str >= (const char*)mMappedFile.mData) && (str < (const char*)mMappedFile.mData + mMappedFile.mFileSize))
+		return false;
+	if (IsObjectFile())
+		return GetLinkedModule()->DbgIsStrMutable(str);
+	return true;
+}
+
 bool ElfDbgModule::ResolveTLSAddress(addr_target operand, CPURegisters* registers, addr_target& outAddr)
 {
 	if (mIsRelocatable)
