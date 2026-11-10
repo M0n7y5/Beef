@@ -311,6 +311,37 @@ void DbgLineDataBuilder::Commit()
 
 //////////////////////////////////////////////////////////////////////////
 
+static int DemangledParamCount(const StringImpl& name)
+{
+	if ((name.IsEmpty()) || (name[name.length() - 1] != ')'))
+		return -1;
+	int depth = 0;
+	int count = 0;
+	bool hasChars = false;
+	for (int i = (int)name.length() - 1; i >= 0; i--)
+	{
+		char c = name[i];
+		if ((c == ')') || (c == '>') || (c == ']'))
+		{
+			if (depth > 0)
+				hasChars = true;
+			depth++;
+		}
+		else if ((c == '(') || (c == '<') || (c == '['))
+		{
+			depth--;
+			if (depth == 0)
+				return hasChars ? count + 1 : 0;
+			hasChars = true;
+		}
+		else if ((c == ',') && (depth == 1))
+			count++;
+		else if ((depth > 0) && (c != ' '))
+			hasChars = true;
+	}
+	return -1;
+}
+
 static const char* DataGetString(const uint8*& data)
 {
 	const char* prevVal = (const char*)data;
@@ -4501,6 +4532,16 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				dwVariable->mType = GetOrCreateType(atType, dataMap);
 				if ((atName != NULL) && (atName[0] == '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
 					splatSubprograms.Add(dwSubprogram);
+				if ((atName != NULL) && (atName[0] != '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
+				{
+					const char* dollarPos = strchr(atName + 1, '$');
+					if ((dollarPos != NULL) && ((dollarPos[1] == '_') || ((dollarPos[1] >= '0') && (dollarPos[1] <= '9'))))
+					{
+						dwVariable->mIsConst = true;
+						dwVariable->mConstValue = (dollarPos[1] == '_') ? -atoll(dollarPos + 2) : atoll(dollarPos + 1);
+						dwVariable->mName = DbgDupString(String(atName, (int)(dollarPos - atName)).c_str());
+					}
+				}
 
 				if (atAbstractOrigin != 0)
 				{
@@ -5098,6 +5139,24 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		declSubprogram->mParams = defSubprogram->mParams;
 		declSubprogram->mBlock.mVariables = defSubprogram->mBlock.mVariables;
 		declSubprogram->mHasThis = defSubprogram->mHasThis;
+		if (IsObjectFile())
+		{
+			declSubprogram->mBlock.mLowPC = defSubprogram->mBlock.mLowPC;
+			declSubprogram->mBlock.mHighPC = defSubprogram->mBlock.mHighPC;
+		}
+	}
+
+	for (auto& kv : declSubprograms)
+	{
+		DbgSubprogram* declSubprogram = kv.mValue;
+		DbgVariable* firstParam = declSubprogram->mParams.mHead;
+		if ((declSubprogram->mHasThis) || (firstParam == NULL) || (firstParam->mName != NULL) || (declSubprogram->mParentType == NULL))
+			continue;
+		int mangledCount = DemangledParamCount(BfDemangler::Demangle(kv.mKey, DbgLanguage_Beef));
+		if ((mangledCount < 0) || (declSubprogram->mParams.Size() != mangledCount + 1))
+			continue;
+		firstParam->mName = "this";
+		declSubprogram->mHasThis = true;
 	}
 
 	if (compileUnit->mLanguage == DbgLanguage_Beef)
