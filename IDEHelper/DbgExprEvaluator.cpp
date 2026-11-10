@@ -5372,7 +5372,7 @@ void DbgExprEvaluator::LookupSplatMember(BfAstNode* targetNode, BfAstNode* looku
 
 	if (found)
 	{
-		bool wantConst = ((valWasConst) && (!memberType->IsConst()) && (!memberType->IsRef()));
+		bool wantConst = ((valWasConst) && (!memberType->IsConst()) && (!memberType->IsRef()) && (GetFlavor() == DbgFlavor_MS));
 		if (!findName.StartsWith("$"))
 			findName = "$" + findName;
 		if (wasUnion)
