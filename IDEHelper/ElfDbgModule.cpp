@@ -154,6 +154,12 @@ addr_target ElfDbgModule::RemapAddr(addr_target addr)
 
 bool ElfDbgModule::ResolveTLSAddress(addr_target operand, CPURegisters* registers, addr_target& outAddr)
 {
+	if (mIsRelocatable)
+	{
+		DbgModule* linkedModule = GetLinkedModule();
+		return (linkedModule != this) && (linkedModule->ResolveTLSAddress(operand, registers, outAddr));
+	}
+
 	if ((mTLSMemSize == 0) || (registers == NULL))
 		return false;
 

@@ -8847,6 +8847,20 @@ void LLDBDebugger::HotDebugInfoAddrs(LLDBHotObject* obj, Array<addr_target>& out
 		}
 		else if ((ELF64_ST_TYPE(sym.st_info) != STT_TLS) && (obj->IsLoadedSection(sym.st_shndx)))
 			addr = obj->mImageAddr + obj->mSectionOffsets[sym.st_shndx] + sym.st_value;
+		bool isTls = (sym.st_shndx < obj->mNumSections) && ((obj->mShdrs[sym.st_shndx].sh_flags & SHF_TLS) != 0);
+		if ((!obj->mSymResolved[symIdx]) && (isTls))
+		{
+			String name = obj->GetSymName(symIdx);
+			HotSymbol* hotSymbol = NULL;
+			uint64* exeOffset = NULL;
+			bool isNamed = (ELF64_ST_TYPE(sym.st_info) != STT_SECTION) && (ELF64_ST_BIND(sym.st_info) != STB_LOCAL) && (!name.IsEmpty());
+			if ((isNamed) && (((mHotPendingSymbols.TryGetValue(name, &hotSymbol)) || (mHotSymbols.TryGetValue(name, &hotSymbol))) && (hotSymbol->mIsTLS)))
+				addr = hotSymbol->mAddr;
+			else if ((isNamed) && (mHotExeTlsOffsets.TryGetValue(name, &exeOffset)))
+				addr = *exeOffset;
+			else if (obj->mTlsSectionOffsets[sym.st_shndx] != -1)
+				addr = (uint64)obj->mTlsSectionOffsets[sym.st_shndx] + sym.st_value;
+		}
 		outSymbolAddrs[symIdx] = addr;
 	}
 #endif
