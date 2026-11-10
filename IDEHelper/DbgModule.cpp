@@ -311,6 +311,38 @@ void DbgLineDataBuilder::Commit()
 
 //////////////////////////////////////////////////////////////////////////
 
+// -1 when the name has no parameter list
+static int DemangledParamCount(const StringImpl& name)
+{
+	if ((name.IsEmpty()) || (name[name.length() - 1] != ')'))
+		return -1;
+	int depth = 0;
+	int count = 0;
+	bool hasChars = false;
+	for (int i = (int)name.length() - 1; i >= 0; i--)
+	{
+		char c = name[i];
+		if ((c == ')') || (c == '>') || (c == ']'))
+		{
+			if (depth > 0)
+				hasChars = true;
+			depth++;
+		}
+		else if ((c == '(') || (c == '<') || (c == '['))
+		{
+			depth--;
+			if (depth == 0)
+				return hasChars ? count + 1 : 0;
+			hasChars = true;
+		}
+		else if ((c == ',') && (depth == 1))
+			count++;
+		else if ((depth > 0) && (c != ' '))
+			hasChars = true;
+	}
+	return -1;
+}
+
 static const char* DataGetString(const uint8*& data)
 {
 	const char* prevVal = (const char*)data;
@@ -4502,6 +4534,17 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				dwVariable->mType = GetOrCreateType(atType, dataMap);
 				if ((atName != NULL) && (atName[0] == '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
 					splatSubprograms.Add(dwSubprogram);
+				// A parameter with a default is named "c$1000", or "c$_1000" for a negative value
+				if ((atName != NULL) && (atName[0] != '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
+				{
+					const char* dollarPos = strchr(atName + 1, '$');
+					if ((dollarPos != NULL) && ((dollarPos[1] == '_') || ((dollarPos[1] >= '0') && (dollarPos[1] <= '9'))))
+					{
+						dwVariable->mIsConst = true;
+						dwVariable->mConstValue = (dollarPos[1] == '_') ? -atoll(dollarPos + 2) : atoll(dollarPos + 1);
+						dwVariable->mName = DbgDupString(String(atName, (int)(dollarPos - atName)).c_str());
+					}
+				}
 
 				if (atAbstractOrigin != 0)
 				{
@@ -5096,8 +5139,8 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 			subprogram->mBlock.mVariables.PushBack(variable);
 	}
 
-	// Beef's DWARF gives a method a declaration in its type and a separate definition without DW_AT_specification;
-	// method lookup finds the declaration, so it takes the definition's parameters as CodeView has them in one record
+	// The definition has no DW_AT_specification, but lookup finds the declaration, so it takes the definition's
+	// parameters, and in a hot object, whose symbols are not looked up by name, its address
 	for (auto& kv : declSubprograms)
 	{
 		DbgSubprogram* defSubprogram = NULL;
@@ -5107,6 +5150,25 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		declSubprogram->mParams = defSubprogram->mParams;
 		declSubprogram->mBlock.mVariables = defSubprogram->mBlock.mVariables;
 		declSubprogram->mHasThis = defSubprogram->mHasThis;
+		if (IsObjectFile())
+		{
+			declSubprogram->mBlock.mLowPC = defSubprogram->mBlock.mLowPC;
+			declSubprogram->mBlock.mHighPC = defSubprogram->mBlock.mHighPC;
+		}
+	}
+
+	// A declaration without a definition lists 'this' unnamed and not artificial, found as one parameter more than the mangled name
+	for (auto& kv : declSubprograms)
+	{
+		DbgSubprogram* declSubprogram = kv.mValue;
+		DbgVariable* firstParam = declSubprogram->mParams.mHead;
+		if ((declSubprogram->mHasThis) || (firstParam == NULL) || (firstParam->mName != NULL) || (declSubprogram->mParentType == NULL))
+			continue;
+		int mangledCount = DemangledParamCount(BfDemangler::Demangle(kv.mKey, DbgLanguage_Beef));
+		if ((mangledCount < 0) || (declSubprogram->mParams.Size() != mangledCount + 1))
+			continue;
+		firstParam->mName = "this";
+		declSubprogram->mHasThis = true;
 	}
 
 	// The base type's name is only known once the unit is read

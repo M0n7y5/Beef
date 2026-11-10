@@ -362,7 +362,28 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 		ReadSymbols(FindSection(".dynsym"), FindSection(".dynstr"));
 
 	if (mIsRelocatable)
+	{
+		// A hot object only declares its methods' types, so the methods go to the primary type as in COFF::MapCompileUnitMethods
+		bool addHotTypes = mHotPrimaryTypes.size() == 0;
+		for (int typeIdx = mStartTypeIdx; typeIdx < mEndTypeIdx; typeIdx++)
+		{
+			DbgType* dbgType = linkedModule->mTypes[typeIdx];
+			if ((!dbgType->mIsDeclaration) || (dbgType->mMethodList.IsEmpty()))
+				continue;
+			DbgType* primaryType = dbgType->GetPrimaryType();
+			if (primaryType == dbgType)
+				continue;
+			while (!dbgType->mMethodList.IsEmpty())
+			{
+				DbgSubprogram* method = dbgType->mMethodList.PopFront();
+				method->mParentType = primaryType;
+				primaryType->mMethodList.PushBack(method);
+			}
+			if (addHotTypes)
+				mHotPrimaryTypes.Add(primaryType);
+		}
 		HotReplaceTypes();
+	}
 
 	RemoveUnusedSrcFiles();
 
