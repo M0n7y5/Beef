@@ -3,9 +3,6 @@ GotoText("Assembly.Test();")
 ToggleBreakpoint()
 RunWithCompiling()
 
-# LLDB wraps these instead of reporting an error, so only the debug info evaluator on Windows is checked
-if (platform == "Linux64") Stop()
-
 AssertEvalEquals("1 << 3", "8")
 AssertEvalContains("1 << 64", "Shift count out of range")
 AssertEvalContains("1 << -1", "Shift count out of range")

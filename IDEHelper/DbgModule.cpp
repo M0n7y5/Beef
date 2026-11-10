@@ -5133,8 +5133,12 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		subprogram->mBlock.mVariables.Clear();
 		for (auto param : newParams)
 			subprogram->mParams.PushBack(param);
+		// Locals as in CodeView, since Beef makes parameters read-only
 		for (auto field : splatFields)
+		{
+			field->mIsParam = false;
 			subprogram->mBlock.mVariables.PushBack(field);
+		}
 		for (auto variable : locals)
 			subprogram->mBlock.mVariables.PushBack(variable);
 	}
