@@ -18,7 +18,6 @@
 #include "lldb/API/LLDB.h"
 #include "DbgTargetHost.h"
 #include "DbgCallConvSysV.h"
-#include <atomic>
 
 NS_BF_BEGIN
 
@@ -50,35 +49,7 @@ public:
 	virtual bool IsMemoryBreakpointBound() override { return !mWatchpointIds.IsEmpty(); }
 };
 
-// An evaluation that calls into the program, run on its own thread (see LLDBDebugger::Evaluate)
-class LLDBPendingEval
-{
-public:
-	String mExpr;
-	DwEvalExpressionFlags mFlags;
-	lldb::SBFrame mFrame;
-	lldb::tid_t mThreadId;
-	String mResult;
-	std::atomic<bool> mDone;
-	bool mCanceled;
-	int mIdleTicks;
-	BfpThread* mThread;
-	std::atomic<BfpThreadId> mWorkerThreadId; // set by the worker itself, before it touches the target
-
-	LLDBPendingEval()
-	{
-		mFlags = DwEvalExpressionFlag_None;
-		mThreadId = 0;
-		mDone = false;
-		mCanceled = false;
-		mIdleTicks = 0;
-		mThread = NULL;
-		mWorkerThreadId = 0;
-	}
-};
-
 struct LLDBHotObject;
-struct LLDBFormatInfo;
 
 class LLDBDebugger : public NS_BF_DBG::DbgTargetHost
 {
@@ -162,16 +133,6 @@ public:
 	int mStepNoInfoTries;                            // instruction steps taken through code without line info
 	uint64 mStepStartFunctionAddr;
 	Dictionary<String, bool> mHasStatementLinesCache;
-
-	// The evaluation in progress (see Evaluate)
-	lldb::SBExpressionOptions mEvalOptions;
-	bool mEvalAllowCalls;
-	bool mEvalAllowProperties;
-	bool mEvalProbeCalls;            // a call isn't made but noted in mEvalWantsCall, so the evaluation can move to a pending one
-	bool mEvalWantsCall;
-	bool mEvalInPendingThread;
-	String mEvalError;               // why a path failed (a property getter or indexer)
-	LLDBPendingEval* mPendingEval;   // running, or finished with its result not yet collected
 
 	// Exception info (populated when RunState_Exception is set)
 	uint64 mExceptionAddress;
@@ -326,35 +287,10 @@ protected:
 	void ClearStepSpecific();
 	bool ContinueStep(lldb::SBThread& thread);
 	lldb::SBThread SelectStoppedThread();
-	lldb::SBValue FindSplatVariable(lldb::SBFrame& frame, const StringImpl& name);
-	lldb::SBValue FindSplatMember(lldb::SBFrame& frame, lldb::SBValue value, const StringImpl& name);
-	lldb::SBValue FindFrameThis(lldb::SBFrame& frame);
-	lldb::SBValue EvaluateBeefPath(lldb::SBFrame& frame, const StringImpl& expr);
-	lldb::SBValue EvaluateInThisContext(lldb::SBFrame& frame, const StringImpl& expr, const StringImpl& thisExpr, String& outText, String& outError);
-	lldb::SBValue FindFrameModuleGlobal(lldb::SBFrame& frame, const StringImpl& name);
-	bool HasGlobalNamed(const StringImpl& name);
-	lldb::SBType HotFindNewestType(const char* typeName);
-	lldb::SBValue HotFindStaticVariable(lldb::SBFrame& frame, const StringImpl& qualifier, const StringImpl& name);
 	bool HotFindThreadLocalOffset(const char* qualifiedName, uint64& outOffset);
-	lldb::SBValue HotFindMemberInNewestTypes(lldb::SBValue value, const StringImpl& name, int depth);
-	String RewriteBeefMemberAccess(lldb::SBFrame& frame, const StringImpl& expr);
-	String RewriteBeefMemberAccessInSpan(lldb::SBFrame& frame, const StringImpl& expr);
 	bool IsClosingBraceLine(lldb::SBLineEntry& lineEntry);
 	bool HostCheckBreakpointCondition(LLDBBreakpoint* bp);
 	String HostBreakpointLogText(const StringImpl& logging);
-	lldb::SBType FindBeefType(lldb::SBFrame& frame, const StringImpl& name);
-	lldb::SBType FindBeefTypeAnywhere(const StringImpl& typeName);
-	lldb::SBValue EvaluateBeefTupleAssign(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
-	String BuildAutocomplete(lldb::SBFrame& frame, const StringImpl& expr, int cursorPos);
-	String EvaluateMemoryWatch(lldb::SBFrame& frame, const StringImpl& expr, int arrayLength);
-	lldb::SBValue EvaluateBeefTypeOp(const StringImpl& expr);
-	lldb::SBValue EvaluateBeefCall(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
-	lldb::SBValue EvaluateBeefOperand(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
-	void SplitBeefArgs(const StringImpl& argsText, Array<String>& outArgs);
-	bool FlattenBeefStruct(lldb::SBValue value, Array<String>& outTypes, Array<String>& outTexts);
-	bool GetBeefMethodDefaults(const char* mangledName, Array<String>& outDefaults);
-	lldb::SBValue CallBeefMethod(lldb::SBFrame& frame, lldb::SBValue thisValue, lldb::SBType staticType, const StringImpl& methodName,
-		const Array<lldb::SBValue>& args, bool allowCall, String& outError);
 	void CreateOutputPipes();
 	void GiveTerminalToTarget(const StringImpl& ttyPath, int pid);
 	void RestoreTerminal();
@@ -433,18 +369,12 @@ protected:
 	void ShadowCheckTLS();
 	void ShadowCheckLineCalls(addr_target pc);
 	void ShadowCheckBreakpoint(LLDBBreakpoint* bp);
-	String LLDBEvaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags);
-	String LLDBGetAutoExpressions(int callStackIdx);
 	void ShadowWriteReport();
 
 public:
 	LLDBDebugger(DebugManager* debugManager);
 	~LLDBDebugger();
 
-	lldb::SBType GetBeefDynamicType(lldb::SBValue objectRef);
-	lldb::SBType GetBeefDynamicTypeAt(uint64 objAddr);
-	bool IsBeefObjectType(lldb::SBType type, int depth = 0);
-	lldb::SBValue EvaluateBeefAddrCast(const StringImpl& expr);
 
 	virtual void OutputMessage(const StringImpl& msg) override;
 	virtual void OutputRawMessage(const StringImpl& msg) override;
@@ -462,12 +392,6 @@ public:
 	void DoLaunch();
 	static void BFP_CALLTYPE LaunchThreadProc(void* param);
 	void WaitForLaunchThread();
-	static void BFP_CALLTYPE PendingEvalThreadProc(void* param);
-	String DoEvaluate(lldb::SBFrame& frame, const StringImpl& evalExpr, LLDBFormatInfo& fmtInfo, DwEvalExpressionFlags expressionFlags);
-	void CleanupPendingEval();
-	void InterruptPendingEval(const char* caller);
-	bool IsTargetBusy();
-	bool IsPausedState();
 	void HandleProcessEvent(lldb::StateType state);
 	virtual void Update() override;
 	virtual void ContinueDebugEvent() override;

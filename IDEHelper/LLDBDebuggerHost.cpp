@@ -196,7 +196,7 @@ bool LLDBDebugger::HasMemoryBreakpoint(addr_target addr, int size)
 
 String LLDBDebugger::GetActiveThreadName()
 {
-	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
+	if (!mLLDBProcess.IsValid())
 		return String();
 	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
 	if ((!thread.IsValid()) || (thread.GetName() == NULL))
@@ -231,7 +231,7 @@ int LLDBDebugger::GetTargetProcessId()
 
 bool LLDBDebugger::PopulateRegisters(CPURegisters* registers)
 {
-	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
+	if (!mLLDBProcess.IsValid())
 		return false;
 	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
 	if (!thread.IsValid())
@@ -439,7 +439,7 @@ bool LLDBDebugger::AssignToReg(int callStackIdx, DbgTypedValue regVal, DbgTypedV
 
 bool LLDBDebugger::SetRegisters(CPURegisters* registers)
 {
-	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
+	if (!mLLDBProcess.IsValid())
 		return false;
 	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
 	if (!thread.IsValid())
@@ -488,7 +488,7 @@ bool LLDBDebugger::SetRegisters(CPURegisters* registers)
 void LLDBDebugger::SaveAllRegisters()
 {
 	mHasSavedRegisters = false;
-	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
+	if (!mLLDBProcess.IsValid())
 		return;
 	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
 	if (!thread.IsValid())
@@ -588,7 +588,7 @@ addr_target LLDBDebugger::GetEvalReturnAddress()
 
 bool LLDBDebugger::IsBeefCallRunning()
 {
-	return (mRunState == RunState_DebugEval) && (mPendingEval == NULL) && (mDebugPendingExpr != NULL);
+	return (mRunState == RunState_DebugEval) && (mDebugPendingExpr != NULL);
 }
 
 // Must run before an evaluation saves registers, because allocating runs code in the target
