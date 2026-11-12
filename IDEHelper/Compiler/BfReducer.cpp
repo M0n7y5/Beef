@@ -1497,6 +1497,13 @@ BfExpression* BfReducer::CheckBinaryOperatorPrecedence(BfBinaryOperatorExpressio
 			}
 		}
 
+		if (nextBinaryOperatorExpression == NULL)
+		{
+			auto rightCondExpression = BfNodeDynCast<BfConditionalExpression>(checkBinOpExpression->mRight);
+			if ((rightCondExpression != NULL) && (rightCondExpression->mTrueExpression != NULL))
+				continue;
+		}
+
 		checkBinOpExpression = nextBinaryOperatorExpression;
 	}
 
