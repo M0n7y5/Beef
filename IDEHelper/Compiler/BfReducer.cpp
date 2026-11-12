@@ -1497,6 +1497,14 @@ BfExpression* BfReducer::CheckBinaryOperatorPrecedence(BfBinaryOperatorExpressio
 			}
 		}
 
+		if (nextBinaryOperatorExpression == NULL)
+		{
+			// A rotation can move the trailing conditional into our right operand, so rerun the hoist at the loop top
+			auto rightCondExpression = BfNodeDynCast<BfConditionalExpression>(checkBinOpExpression->mRight);
+			if ((rightCondExpression != NULL) && (rightCondExpression->mTrueExpression != NULL))
+				continue;
+		}
+
 		checkBinOpExpression = nextBinaryOperatorExpression;
 	}
 
