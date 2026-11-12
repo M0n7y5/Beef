@@ -3593,7 +3593,9 @@ BfUsingStatement* BfReducer::CreateUsingStatement(BfAstNode* node)
 			BfAstNode* outNode = mVisitorPos.Get(outNodeIdx);
 			BfAstNode* outNodeNext = mVisitorPos.Get(outNodeIdx + 1);
 			BfTokenNode* equalsNode = NULL;
-			if ((outNode != NULL) && (BfNodeIsA<BfIdentifierNode>(outNode)) && (BfNodeIsA<BfTokenNode>(outNodeNext)))
+			auto outNodeNextToken = BfNodeDynCast<BfTokenNode>(outNodeNext);
+			if ((outNode != NULL) && (BfNodeIsA<BfIdentifierNode>(outNode)) && (outNodeNextToken != NULL) &&
+				((outNodeNextToken->GetToken() == BfToken_AssignEquals) || (outNodeNextToken->GetToken() == BfToken_RParen)))
 			{
 				auto typeRef = CreateTypeRefAfter(usingStatement);
 				if (typeRef == NULL)
