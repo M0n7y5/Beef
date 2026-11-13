@@ -379,6 +379,9 @@ void Internal::Dbg_MarkObjectDeleted(bf::System::Object* object)
 #ifdef BF_GC_SUPPORTED
 	if ((prevFlags & BfObjectFlag_Allocated) != 0)
 		gBFGC.ObjectDeleteRequested(object);
+#else
+	if ((prevFlags & BfObjectFlag_Allocated) != 0)
+		BfGCObjectDeleted(object);
 #endif
 }
 

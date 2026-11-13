@@ -477,6 +477,19 @@ void* BfRawAllocate(intptr elemCount, bf::System::DbgRawAllocData* rawAllocData,
 void BfRawFree(void* ptr);
 void BfRawShutdown();
 
+void BfGCInit();
+void BfGCStopCollecting();
+void BfGCCollect(bool async);
+void BfGCSetAutoCollectPeriod(intptr periodMS);
+void BfGCSetCollectFreeThreshold(intptr freeBytes);
+void BfGCReportTLSMember(void* ptr, void* markFunc);
+void BfGCAddStackMarkableObject(bf::System::Object* obj);
+void BfGCRemoveStackMarkableObject(bf::System::Object* obj);
+void BfGCAddPendingThread(void* internalThread);
+void BfGCMarkObject(bf::System::Object* obj);
+void BfGCMarkRange(void* ptr, intptr size);
+void BfGCObjectDeleted(bf::System::Object* obj);
+
 #endif
 
 namespace bf
