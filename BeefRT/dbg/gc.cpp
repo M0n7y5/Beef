@@ -3384,10 +3384,11 @@ BFRT_EXPORT void bf::System::GC::ExcludeThreadId(intptr threadId)
 
 #else // BF_GC_SUPPORTED
 
+extern bf::System::DbgRawAllocData sObjectAllocData;
+
 void* BfObjectAllocate(intptr size, bf::System::Type* type)
 {
-    BF_FATAL("Not supported");
-    return NULL;
+	return BfRawAllocate(size, &sObjectAllocData, NULL, 0);
 }
 
 using namespace bf::System;
@@ -3409,6 +3410,7 @@ void GC::ReportTLSMember(intptr tlsIndex, void* ptr, void* markFunc)
 
 void GC::Shutdown()
 {
+	BfRawShutdown();
 }
 
 void GC::Collect(bool async)

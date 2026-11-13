@@ -475,6 +475,7 @@ public:
 void* BfObjectAllocate(intptr size, bf::System::Type* type);
 void* BfRawAllocate(intptr elemCount, bf::System::DbgRawAllocData* rawAllocData, void* stackTraceInfo, int stackTraceCount);
 void BfRawFree(void* ptr);
+void BfRawShutdown();
 
 #endif
 
