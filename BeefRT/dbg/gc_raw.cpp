@@ -1336,6 +1336,11 @@ void BfGCAddPendingThread(void* internalThread)
 		gGCPendingThreads->Add(threadObj);
 }
 
+extern "C" void BfGCAttachThread()
+{
+	BfGCRegisterCurrentThread();
+}
+
 void BfGCThreadStarted(BfInternalThread* internalThread)
 {
 	if (gGCThreadExitTLS == NULL)
