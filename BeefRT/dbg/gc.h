@@ -464,6 +464,8 @@ extern BFGC gBFGC;
 
 #else //BF_GC_SUPPORTED
 
+#define BF_OBJECTFLAG_MARK_ID_MASK      0x03
+
 class BFGC
 {
 public:
