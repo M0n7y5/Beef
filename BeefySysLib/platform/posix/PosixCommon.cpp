@@ -3838,10 +3838,34 @@ BFP_EXPORT void BFP_CALLTYPE BfpFindFileData_Release(BfpFindFileData* findData)
     delete findData;
 }
 
-BFP_EXPORT int BFP_CALLTYPE BfpStack_CaptureBackTrace(int framesToSkip, intptr* outFrames, int wantFrameCount)
+struct CaptureBackTraceState
 {
-    //
-    return 0;
+    int mSkipCount;
+    intptr* mFrames;
+    int mWantCount;
+    int mCount;
+};
+
+static _Unwind_Reason_Code CaptureBackTraceHandler(struct _Unwind_Context* context, void* ref)
+{
+    CaptureBackTraceState* state = (CaptureBackTraceState*)ref;
+    if (state->mSkipCount > 0)
+    {
+        state->mSkipCount--;
+        return _URC_NO_REASON;
+    }
+    intptr addr = (intptr)_Unwind_GetIP(context);
+    if ((addr == 0) || (state->mCount >= state->mWantCount))
+        return _URC_END_OF_STACK;
+    state->mFrames[state->mCount++] = addr;
+    return _URC_NO_REASON;
+}
+
+BFP_EXPORT __attribute__((noinline)) int BFP_CALLTYPE BfpStack_CaptureBackTrace(int framesToSkip, intptr* outFrames, int wantFrameCount)
+{
+    CaptureBackTraceState state = { framesToSkip + 1, outFrames, wantFrameCount, 0 };
+    _Unwind_Backtrace(&CaptureBackTraceHandler, &state);
+    return state.mCount;
 }
 
 BFP_EXPORT void BFP_CALLTYPE BfpOutput_DebugString(const char* str)
