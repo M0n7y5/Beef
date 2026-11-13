@@ -123,6 +123,17 @@ namespace IDE.ui
 			darkEditContent.mRemapToHighestCompileIdx = remapToHighestCompileIdx;
 		}
 
+		public ~this()
+		{
+			for (var widgetEntry in mInlineWidgets)
+			{
+				if (widgetEntry.mWidget.mParent == null)
+					delete widgetEntry.mWidget;
+			}
+			for (var queuedDisplayChange in mQueuedDisplayChanges)
+				delete queuedDisplayChange.mWidget;
+		}
+
         public override void Serialize(StructuredData data)
         {            
             data.Add("Type", "OutputPanel");
