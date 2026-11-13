@@ -1,0 +1,20 @@
+# Leaks found at shutdown reach the Output panel, and a leaked object shows its allocation stack trace
+SetExpectError("1 object memory leak detected")
+RunWithCompiling()
+ExpectError()
+
+SelectCallStackWithStr("Internal.Shutdown")
+AddWatch("(System.Object)(void*)LeakTest.Program.sLeakedAddr")
+SelectWatch("(System.Object)(void*)LeakTest.Program.sLeakedAddr")
+AssertSelectedWatchContains("{ 42 }")
+OpenSelectedWatches()
+SelectWatch("[AllocStackTrace]")
+AssertSelectedWatchContains("LeakTest.Program.Leak()")
+OpenSelectedWatches()
+SelectWatch("[0]")
+AssertSelectedWatchContains("LeakTest.Program.Leak()")
+
+SetExpectError("1 raw memory leak detected")
+Continue()
+ExpectError()
+Continue()
