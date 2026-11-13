@@ -577,6 +577,102 @@ namespace System.Net
 #elif BF_PLATFORM_LINUX
 		[LinkName("__errno_location")]
 		static extern int32* _errno();
+
+		// A signal, the debug runtime's leak collector suspend included, interrupts poll and select always,
+		// and socket calls once SO_RCVTIMEO or SO_SNDTIMEO is set. These retry with the time left.
+		const int32 EINTR = 4;
+		const int32 EAGAIN = 11;
+		const int32 EINPROGRESS = 115;
+		const int32 SO_ERROR = 4;
+		const int32 SO_RCVTIMEO = 20;
+		const int32 SO_SNDTIMEO = 21;
+
+		[CLink, CallingConvention(.Stdcall)]
+		static extern int32 getsockopt(HSocket s, int32 level, int32 optname, void* optval, int32* optlen);
+
+		static bool Interrupted(int32 result) => (result == -1) && (*_errno() == EINTR);
+
+		static int32 TimeLeft(int32 timeoutMS, uint32 startTick)
+		{
+			if (timeoutMS < 0)
+				return timeoutMS;
+			return Math.Max(timeoutMS - (int32)(Platform.BfpSystem_TickCount() - startTick), 0);
+		}
+
+		static int32 PollRestarting(PollFD* fds, uint nfds, int32 timeoutMS)
+		{
+			uint32 startTick = Platform.BfpSystem_TickCount();
+			while (true)
+			{
+				int32 result = poll(fds, (.)nfds, TimeLeft(timeoutMS, startTick));
+				if (!Interrupted(result))
+					return result;
+			}
+		}
+
+		static int32 SelectRestarting(int32 nfds, FDSet* readFDS, FDSet* writeFDS, FDSet* exceptFDS, TimeVal* timeVal)
+		{
+			uint32 startTick = Platform.BfpSystem_TickCount();
+			int32 timeoutMS = (timeVal != null) ? (int32)(timeVal.mSec * 1000 + timeVal.mUSec / 1000) : -1;
+			FDSet readSet = (readFDS != null) ? *readFDS : default;
+			FDSet writeSet = (writeFDS != null) ? *writeFDS : default;
+			FDSet exceptSet = (exceptFDS != null) ? *exceptFDS : default;
+			while (true)
+			{
+				int32 result = select(nfds, readFDS, writeFDS, exceptFDS, timeVal);
+				if (!Interrupted(result))
+					return result;
+				if (readFDS != null)
+					*readFDS = readSet;
+				if (writeFDS != null)
+					*writeFDS = writeSet;
+				if (exceptFDS != null)
+					*exceptFDS = exceptSet;
+				if (timeVal != null)
+				{
+					int32 timeLeft = TimeLeft(timeoutMS, startTick);
+					timeVal.mSec = timeLeft / 1000;
+					timeVal.mUSec = (timeLeft % 1000) * 1000;
+				}
+			}
+		}
+
+		/// After an interrupted socket call: waits for the socket with what is left of its own timeout.
+		/// False with EAGAIN, as the kernel reports a timeout, when that runs out.
+		static bool WaitAfterInterrupt(HSocket s, int32 timeoutOption, PollEvents events, uint32 startTick)
+		{
+			TimeVal timeVal = default;
+			int32 len = sizeof(TimeVal);
+			int32 timeoutMS = -1;
+			if ((getsockopt(s, (.)SOL_SOCKET, timeoutOption, &timeVal, &len) == 0) && ((timeVal.mSec != 0) || (timeVal.mUSec != 0)))
+				timeoutMS = (int32)(timeVal.mSec * 1000 + timeVal.mUSec / 1000);
+			PollFD pollFD = .(s, events);
+			int32 result = PollRestarting(&pollFD, 1, TimeLeft(timeoutMS, startTick));
+			if (result == 0)
+				*_errno() = EAGAIN;
+			return result > 0;
+		}
+
+		/// An interrupted connect goes on in the kernel: wait for it like a timed connect would
+		static int32 FinishInterruptedConnect(HSocket s, uint32 startTick)
+		{
+			if (!WaitAfterInterrupt(s, SO_SNDTIMEO, .Out, startTick))
+			{
+				if (*_errno() == EAGAIN)
+					*_errno() = EINPROGRESS;
+				return -1;
+			}
+			int32 error = 0;
+			int32 len = sizeof(int32);
+			if (getsockopt(s, (.)SOL_SOCKET, SO_ERROR, &error, &len) != 0)
+				return -1;
+			if (error != 0)
+			{
+				*_errno() = error;
+				return -1;
+			}
+			return 0;
+		}
 #elif BF_PLATFORM_MACOS
 		[LinkName("__error")]
 		static extern int32* _errno();
@@ -826,7 +922,15 @@ namespace System.Net
 				opt.Dispose();
 			}
 
+#if BF_PLATFORM_LINUX
+			uint32 startTick = Platform.BfpSystem_TickCount();
+			int32 connectResult = connect(mHandle, addr, addrLen);
+			if (Interrupted(connectResult))
+				connectResult = FinishInterruptedConnect(mHandle, startTick);
+			if (connectResult == SOCKET_ERROR)
+#else
 			if (connect(mHandle, addr, addrLen) == SOCKET_ERROR)
+#endif
 			{
 #unwarn
 				let err = GetLastError();
@@ -842,7 +946,14 @@ namespace System.Net
 
 		public Result<void, SocketError> AcceptFrom(Socket listenSocket, SockAddr* from, int32* fromLen)
 		{
+#if BF_PLATFORM_LINUX
+			uint32 startTick = Platform.BfpSystem_TickCount();
+#endif
 			mHandle = accept(listenSocket.mHandle, from, fromLen);
+#if BF_PLATFORM_LINUX
+			while ((mHandle == INVALID_SOCKET) && (*_errno() == EINTR) && (WaitAfterInterrupt(listenSocket.mHandle, SO_RCVTIMEO, .In, startTick)))
+				mHandle = accept(listenSocket.mHandle, from, fromLen);
+#endif
 			if (mHandle == INVALID_SOCKET)
 			{
 #unwarn
@@ -896,13 +1007,19 @@ namespace System.Net
             if (exceptFDS != null)
                 nfds = Math.Max(nfds, (.)exceptFDS.[Friend]afterLastBit);
 #endif
+#if BF_PLATFORM_LINUX
+			return SelectRestarting(nfds, readFDS, writeFDS, exceptFDS, timeVal);
+#else
 			return select(nfds, readFDS, writeFDS, exceptFDS, timeVal);
+#endif
 		}
 
 		public static int32 Poll(PollFD* fds, uint nfds, int timeout)
 		{
 #if BF_PLATFORM_WINDOWS
 			return WSAPoll(fds, (.)nfds, (.)timeout);
+#elif BF_PLATFORM_LINUX
+			return PollRestarting(fds, nfds, (.)timeout);
 #else
 			return poll(fds, (.)nfds, (.)timeout);
 #endif
@@ -940,7 +1057,14 @@ namespace System.Net
 
 		public Result<int, SocketError> Recv(void* ptr, int size, MessageFlags flags = 0)
 		{
+#if BF_PLATFORM_LINUX
+			uint32 startTick = Platform.BfpSystem_TickCount();
+#endif
 			int32 result = recv(mHandle, ptr, (int32)size, (.)flags);
+#if BF_PLATFORM_LINUX
+			while (Interrupted(result) && WaitAfterInterrupt(mHandle, SO_RCVTIMEO, .In, startTick))
+				result = recv(mHandle, ptr, (int32)size, (.)flags);
+#endif
 			if (result == 0)
 			{
 				mIsConnected = false;
@@ -964,7 +1088,14 @@ namespace System.Net
 
 		public Result<int, SocketError> RecvFrom(void* ptr, int size, SockAddr* from, ref int32 fromLen, MessageFlags flags = 0)
 		{
+#if BF_PLATFORM_LINUX
+			uint32 startTick = Platform.BfpSystem_TickCount();
+#endif
 			int32 result = recvfrom(mHandle, ptr, (int32)size, (.)flags, from, &fromLen);
+#if BF_PLATFORM_LINUX
+			while (Interrupted(result) && WaitAfterInterrupt(mHandle, SO_RCVTIMEO, .In, startTick))
+				result = recvfrom(mHandle, ptr, (int32)size, (.)flags, from, &fromLen);
+#endif
 			if (result == 0)
 			{
 				mIsConnected = false;
@@ -980,7 +1111,14 @@ namespace System.Net
 
 		public Result<int, SocketError> Send(void* ptr, int size, MessageFlags flags = 0)
 		{
+#if BF_PLATFORM_LINUX
+			uint32 startTick = Platform.BfpSystem_TickCount();
+#endif
 			int32 result = send(mHandle, ptr, (int32)size, (.)flags);
+#if BF_PLATFORM_LINUX
+			while (Interrupted(result) && WaitAfterInterrupt(mHandle, SO_SNDTIMEO, .Out, startTick))
+				result = send(mHandle, ptr, (int32)size, (.)flags);
+#endif
 			if (result < 0)
 			{
 				CheckDisconnected();
@@ -991,7 +1129,14 @@ namespace System.Net
 
 		public Result<int, SocketError> SendTo(void* ptr, int size, SockAddr* to, int toLen, MessageFlags flags = 0)
 		{
+#if BF_PLATFORM_LINUX
+			uint32 startTick = Platform.BfpSystem_TickCount();
+#endif
 			int32 result = sendto(mHandle, ptr, (int32)size, (.)flags, to, (.)toLen);
+#if BF_PLATFORM_LINUX
+			while (Interrupted(result) && WaitAfterInterrupt(mHandle, SO_SNDTIMEO, .Out, startTick))
+				result = sendto(mHandle, ptr, (int32)size, (.)flags, to, (.)toLen);
+#endif
 			if (result < 0)
 			{
 				CheckDisconnected();

@@ -669,7 +669,11 @@ abstract class CommonDialog
 		while(!mDone)
 		{
 		    Linux.DBusMsg* m = ?;
-			TryC!(Linux.SdBusWait(mBus, uint64.MaxValue));
+			int32 waitResult = Linux.SdBusWait(mBus, uint64.MaxValue);
+			// A signal, the leak collector's suspend one included, ends the wait with -EINTR
+			if (waitResult == -4)
+				continue;
+			TryC!(waitResult);
 			TryC!(Linux.SdBusProcess(mBus, &m));
 		    Linux.SdBusMessageUnref(m);
 		}
