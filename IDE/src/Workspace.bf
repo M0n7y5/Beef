@@ -383,16 +383,13 @@ namespace IDE
 			{
 			}
 
-			public bool LeakCheckingEnabled
+			public bool LeakCheckingEnabled(PlatformType platformType)
 			{
-				get
-				{
 #if BF_PLATFORM_WINDOWS
-					return mEnableRealtimeLeakCheck && mEnableObjectDebugFlags && (mAllocType == .Debug) && (mRuntimeKind != .Disabled);
+				return mEnableRealtimeLeakCheck && mEnableObjectDebugFlags && (mAllocType == .Debug) && (mRuntimeKind != .Disabled);
 #else
-					return false;
+				return (platformType == .Linux) && mEnableRealtimeLeakCheck && mEnableObjectDebugFlags && (mAllocType == .Debug) && (mRuntimeKind != .Disabled);
 #endif
-				}
 			}
 			
 			public void CopyFrom(Workspace.Options prev)

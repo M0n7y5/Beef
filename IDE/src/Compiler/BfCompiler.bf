@@ -740,7 +740,7 @@ namespace IDE.Compiler
 			SetOpt(emitObjectAccessCheck, .EmitObjectAccessCheck);
 			SetOpt(options.mArithmeticCheck, .ArithmeticChecks);
 
-			if (options.LeakCheckingEnabled)
+			if (options.LeakCheckingEnabled(Workspace.PlatformType.GetFromName(gApp.mPlatformName, targetTriple)))
 				SetOpt(options.mEnableRealtimeLeakCheck, .EnableRealtimeLeakCheck);
 
 			SetOpt(options.mEnableSideStack, .EnableSideStack);
