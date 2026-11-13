@@ -1182,7 +1182,8 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 				// A break in the program, which can carry a runtime error message
 				mActiveBreakpoint = NULL;
 				mRunState = RunState_Paused;
-				CheckNonDebuggerBreak(thread);
+				if (!CheckCompilerTrap(thread))
+					CheckNonDebuggerBreak(thread);
 			}
 			else
 			{
@@ -1191,6 +1192,36 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 			}
 		}
 	}
+}
+
+bool LLDBDebugger::CheckCompilerTrap(lldb::SBThread& thread)
+{
+	lldb::SBFrame frame = thread.GetFrameAtIndex(0);
+	if (!frame.IsValid())
+		return false;
+	HostSyncModules();
+	CPURegisters registers;
+	HostReadFrameRegisters(frame, &registers);
+	// The PC is past the one byte trap
+	addr_target trapAddr = (addr_target)frame.GetPC() - 1;
+	intptr_target objAddr = 0;
+	// Not through DebugTarget::GetDbgBreakKind: it needs a module image copy, which ELF modules don't keep
+	if (!HostCoversAddress((intptr)trapAddr))
+		return false;
+	DbgBreakKind breakKind = GetDbgBreakKind(trapAddr, NULL, registers.mIntRegsArray, &objAddr);
+	if (breakKind == DbgBreakKind_ObjectAccess)
+	{
+		String errorStr = "error Attempted to access deleted object";
+		String objectAddr = EncodeDataPtr((addr_target)objAddr, true);
+		errorStr += StrFormat("\x1LEAK\t(System.Object)%s\n   (%s)%s\n", objectAddr.c_str(), "System.Object", objectAddr.c_str());
+		mDebugManager->mOutMessages.push_back(errorStr);
+	}
+	else if (breakKind == DbgBreakKind_ArithmeticOverflow)
+		mDebugManager->mOutMessages.push_back("error Arithmetic overflow detected");
+	else
+		return false;
+	mRequestedStackFrameIdx = 0;
+	return true;
 }
 
 void LLDBDebugger::CheckNonDebuggerBreak(lldb::SBThread& thread)

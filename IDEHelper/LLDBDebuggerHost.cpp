@@ -768,9 +768,76 @@ bool LLDBDebugger::DecodeInstruction(addr_target address, DbgModuleMemoryCache* 
 	return false;
 }
 
+// 'address' is the trap instruction. The compiler emits the checks as inline asm (BfIRCodeGen.cpp):
+// "cmpb $128, (reg); jb 1f; int $3" for an object access, "testb $1, reg8; jz 1f; int $3" for an overflow,
+// and the assembler encodes "int $3" as the one byte CC.
 DbgBreakKind LLDBDebugger::GetDbgBreakKind(addr_target address, DbgModuleMemoryCache* memoryCache, intptr_target* regs, intptr_target* outObjectPtr)
 {
-	HostUnsupported("GetDbgBreakKind");
+	const int trapIdx = 8;
+	uint8 code[trapIdx + 1];
+	if (!ReadMemory((intptr)address - trapIdx, sizeof(code), code))
+		return DbgBreakKind_None;
+	if ((code[trapIdx] != 0xCC) || (code[trapIdx - 1] != 0x01))
+		return DbgBreakKind_None;
+	uint8 jumpOpcode = code[trapIdx - 2];
+	const int checkEnd = trapIdx - 2;
+
+	if (jumpOpcode == 0x74)
+	{
+		for (int checkLen = 3; checkLen <= 4; checkLen++)
+		{
+			int idx = checkEnd - checkLen;
+			if ((checkLen == 4) && ((code[idx++] & 0xF0) != 0x40))
+				continue;
+			// F6 /0 ib with a register operand
+			if ((code[idx] == 0xF6) && ((code[idx + 1] & 0xF8) == 0xC0) && (code[idx + 2] == 0x01))
+				return DbgBreakKind_ArithmeticOverflow;
+		}
+		return DbgBreakKind_None;
+	}
+
+	if (jumpOpcode != 0x72)
+		return DbgBreakKind_None;
+
+	// Hardware register numbers to X64CPURegister
+	static const int regMap[16] = { X64Reg_RAX, X64Reg_RCX, X64Reg_RDX, X64Reg_RBX, X64Reg_RSP, X64Reg_RBP, X64Reg_RSI, X64Reg_RDI,
+		X64Reg_R8, X64Reg_R9, X64Reg_R10, X64Reg_R11, X64Reg_R12, X64Reg_R13, X64Reg_R14, X64Reg_R15 };
+	for (int checkLen = 3; checkLen <= 5; checkLen++)
+	{
+		int idx = checkEnd - checkLen;
+		int regBase = 0;
+		if ((code[idx] & 0xF0) == 0x40)
+		{
+			if ((code[idx] & 0x0E) != 0)
+				continue;
+			regBase = ((code[idx] & 0x01) != 0) ? 8 : 0;
+			idx++;
+		}
+		// 80 /7 ib with a [reg] operand: rsp and r12 need a SIB byte, rbp and r13 a zero disp8
+		if (code[idx++] != 0x80)
+			continue;
+		uint8 modRM = code[idx++];
+		int mod = modRM >> 6;
+		int rm = modRM & 7;
+		if (((modRM >> 3) & 7) != 7)
+			continue;
+		if ((mod == 0) && (rm == 4))
+		{
+			if (code[idx++] != 0x24)
+				continue;
+		}
+		else if ((mod == 1) && (rm == 5))
+		{
+			if (code[idx++] != 0)
+				continue;
+		}
+		else if ((mod != 0) || (rm == 5))
+			continue;
+		if ((idx != checkEnd - 1) || (code[idx] != 0x80))
+			continue;
+		*outObjectPtr = regs[regMap[regBase + rm]];
+		return DbgBreakKind_ObjectAccess;
+	}
 	return DbgBreakKind_None;
 }
 
