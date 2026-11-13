@@ -105,8 +105,15 @@ unsigned long Thread::GetProcessDefaultStackSize()
 }
 
 
+#if defined(BF_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+extern "C" void BfGCAttachThread();
+#endif
+
 static void BF_CALLTYPE CStartProc(void* threadParam)
 {
+#if defined(BF_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+	BfGCAttachThread();
+#endif
 	Thread* thread = (Thread*)threadParam;
 #ifdef BF_THREAD_TLS
 	Thread::sCurrentThread = thread;
