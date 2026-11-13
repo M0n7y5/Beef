@@ -123,6 +123,18 @@ namespace IDE.ui
 			darkEditContent.mRemapToHighestCompileIdx = remapToHighestCompileIdx;
 		}
 
+		public ~this()
+		{
+			// Inline widgets scrolled out of view, or not shown yet, have no parent to delete them
+			for (var widgetEntry in mInlineWidgets)
+			{
+				if (widgetEntry.mWidget.mParent == null)
+					delete widgetEntry.mWidget;
+			}
+			for (var queuedDisplayChange in mQueuedDisplayChanges)
+				delete queuedDisplayChange.mWidget;
+		}
+
         public override void Serialize(StructuredData data)
         {            
             data.Add("Type", "OutputPanel");
