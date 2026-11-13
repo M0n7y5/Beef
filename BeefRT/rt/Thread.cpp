@@ -225,9 +225,16 @@ void Thread::RequestExitNotify()
 #endif
 }
 
+#if defined(BF_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+void BfGCThreadStarted(BfInternalThread* internalThread);
+#endif
+
 void Thread::ThreadStarted()
 {
 	auto internalThread = GetInternalThread();
+#if defined(BF_PLATFORM_LINUX) && !defined(__EMSCRIPTEN__)
+	BfGCThreadStarted(internalThread);
+#endif
 	internalThread->mCritSect.Unlock();
 }
 
