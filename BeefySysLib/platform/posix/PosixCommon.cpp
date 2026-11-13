@@ -62,6 +62,26 @@
 
 USING_NS_BF;
 
+static int64 MonotonicMS()
+{
+	timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (int64)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static int PollRestarting(pollfd* fds, nfds_t count, int timeoutMS)
+{
+	int64 deadline = MonotonicMS() + timeoutMS;
+	while (true)
+	{
+		int result = poll(fds, count, timeoutMS);
+		if ((result != -1) || (errno != EINTR))
+			return result;
+		if (timeoutMS > 0)
+			timeoutMS = (int)BF_MAX(deadline - MonotonicMS(), (int64)0);
+	}
+}
+
 struct BfpPipeInfo
 {
 	String mPipePath;
@@ -1408,7 +1428,7 @@ BFP_EXPORT bool BFP_CALLTYPE BfpProcess_WaitFor(BfpProcess* process, int waitMS,
 	defer( close(processFd) );
 
 	pollfd pfd = { processFd, POLLIN, 0};
-	if (poll(&pfd, 1, waitMS) == -1)
+	if (PollRestarting(&pfd, 1, waitMS) == -1)
 	{
 		OUTRESULT(BfpProcessResult_UnknownError);
 		return false;
@@ -1942,7 +1962,7 @@ bool BfpSpawn_WaitFor(BfpSpawn* spawn, int waitMS, int* outExitCode, BfpSpawnRes
 		.revents =  0
 	};
 
-	if (poll(&pollFd, 1, (int)waitMS) == -1)
+	if (PollRestarting(&pollFd, 1, (int)waitMS) == -1)
 	{
 		OUTRESULT(BfpSpawnResult_UnknownError);
 		return false;
@@ -3317,19 +3337,8 @@ BFP_EXPORT intptr BFP_CALLTYPE BfpFile_Read(BfpFile* file, void* buffer, intptr 
 		if (!file->mAllowTimeout)
 			timeoutMS = -1;
 
-		timeval timeout;
-		timeout.tv_sec = 0;
-		timeout.tv_usec = timeoutMS * 1000;
-
-		fd_set readFDSet;
-		FD_ZERO(&readFDSet);
-		FD_SET(file->mHandle, &readFDSet);
-
-		fd_set errorFDSet;
-		FD_ZERO(&errorFDSet);
-		FD_SET(file->mHandle, &errorFDSet);
-
-		if (select(file->mHandle + 1, &readFDSet, NULL, &errorFDSet, (timeoutMS == -1) ? NULL : &timeout) < 0)
+		pollfd pollFd = { file->mHandle, POLLIN, 0 };
+		if (PollRestarting(&pollFd, 1, timeoutMS) < 0)
 		{
 			OUTRESULT(BfpFileResult_Timeout);
 			return 0;
