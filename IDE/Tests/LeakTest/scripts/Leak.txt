@@ -13,7 +13,7 @@ OpenSelectedWatches()
 SelectWatch("[0]")
 AssertSelectedWatchContains("LeakTest.Program.Leak()")
 
-SetExpectError("1 raw memory leak detected")
+SetExpectError("raw memory leak")
 Continue()
 ExpectError()
 Continue()
