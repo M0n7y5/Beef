@@ -1349,6 +1349,12 @@ void BfGCAddPendingThread(void* internalThread)
 		gGCPendingThreads->Add(threadObj);
 }
 
+// What DLL_THREAD_ATTACH gives the Windows collector: threads outside the Beef Thread start path register here
+extern "C" void BfGCAttachThread()
+{
+	BfGCRegisterCurrentThread();
+}
+
 void BfGCThreadStarted(BfInternalThread* internalThread)
 {
 	if (gGCThreadExitTLS == NULL)

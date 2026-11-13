@@ -10,6 +10,9 @@
 
 #include <sys/inotify.h>
 
+// Defined by the debug runtime's leak collector when it is linked in
+extern "C" void BfGCAttachThread() __attribute__((weak));
+
 struct BfpFileWatcher
 {
     String mPath;
@@ -51,11 +54,16 @@ private:
             int length = read(mInotifyHandle, &mEventBuffer, NOTIFY_BUFFER_SIZE);
             if (mIsClosing) 
                 break;
+            if ((length < 0) && (errno == EINTR))
+                continue;
             if (length < 0)
             {
                 BFP_ERRPRINTF("Failed to read inotify event data!\n");
                 return;
             }
+            // The callbacks run Beef code, so the leak collector must scan this thread's stack
+            if (BfGCAttachThread != NULL)
+                BfGCAttachThread();
             int pos = 0;
             while(pos < length)
             {
