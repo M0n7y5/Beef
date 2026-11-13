@@ -8,5 +8,4 @@ StartupProject = "LeakTest"
 AllocStackTraceDepth = 10
 
 [Configs.Debug.Linux64]
-EnableRealtimeLeakCheck = true
 AllocStackTraceDepth = 10
