@@ -1,6 +1,7 @@
 #include "Common.h"
 #include "BFPlatform.h"
 #include <stdlib.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #ifdef BF_PLATFORM_LINUX
@@ -2477,16 +2478,34 @@ BFP_EXPORT void BFP_CALLTYPE BfpCritSect_Leave(BfpCritSect* critSect)
     pthread_mutex_unlock(&critSect->mPMutex);
 }
 
+// Each key's destructor, so releasing a key can run it like FlsFree does
+static BfpTLSProc gTLSExitProcs[PTHREAD_KEYS_MAX];
+
 BFP_EXPORT BfpTLS* BFP_CALLTYPE BfpTLS_Create(BfpTLSProc exitProc)
 {
     pthread_key_t key = 0;
     pthread_key_create(&key, exitProc);
+    if ((intptr)key < PTHREAD_KEYS_MAX)
+        gTLSExitProcs[(intptr)key] = exitProc;
     return (BfpTLS*)(intptr)key;
 }
 
 BFP_EXPORT void BFP_CALLTYPE BfpTLS_Release(BfpTLS* tls)
 {
-    pthread_key_delete((pthread_key_t)(intptr)tls);
+    // pthread_key_delete runs no destructors, and the main thread never runs them at exit
+    pthread_key_t key = (pthread_key_t)(intptr)tls;
+    if ((intptr)key < PTHREAD_KEYS_MAX)
+    {
+        BfpTLSProc exitProc = gTLSExitProcs[(intptr)key];
+        gTLSExitProcs[(intptr)key] = NULL;
+        void* value = pthread_getspecific(key);
+        if ((exitProc != NULL) && (value != NULL))
+        {
+            pthread_setspecific(key, NULL);
+            exitProc(value);
+        }
+    }
+    pthread_key_delete(key);
 }
 
 BFP_EXPORT void BFP_CALLTYPE BfpTLS_SetValue(BfpTLS* tls, void* value)
