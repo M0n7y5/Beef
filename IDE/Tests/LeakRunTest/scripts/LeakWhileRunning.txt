@@ -1,0 +1,22 @@
+# A leak is reported while the program runs, and the program runs on after Continue
+SetExpectError("1 object memory leak detected")
+RunWithCompiling()
+ExpectError()
+
+# The collector thread breaks, so evaluate in the main thread's Main frame.
+# Skipped on Win32, where the stack walk from the break does not reach a Beef frame
+if (platform != "Win32") SelectThread("")
+if (platform != "Win32") SelectCallStackWithStr("LeakRunTest.Program.Main")
+if (platform != "Win32") AssertEvalEquals("LeakRunTest.Program.sLoops < 200", "true")
+if (platform != "Win32") AddWatch("(System.Object)(void*)LeakRunTest.Program.sLeakedAddr")
+if (platform != "Win32") SelectWatch("(System.Object)(void*)LeakRunTest.Program.sLeakedAddr")
+if (platform != "Win32") AssertSelectedWatchContains("{ 42 }")
+if (platform != "Win32") OpenSelectedWatches()
+if (platform != "Win32") SelectWatch("[AllocStackTrace]")
+if (platform != "Win32") AssertSelectedWatchContains("LeakRunTest.Program.Leak()")
+
+# A leak is reported again by each following collection, as long as the program runs
+SetExpectError("1 object memory leak detected")
+Continue()
+ExpectError()
+StopRunning()

@@ -1,0 +1,11 @@
+FileVersion = 1
+Projects = {LeakRunTest = {Path = "."}}
+
+[Workspace]
+StartupProject = "LeakRunTest"
+
+[Configs.Debug.Win64]
+AllocStackTraceDepth = 10
+
+[Configs.Debug.Linux64]
+AllocStackTraceDepth = 10
