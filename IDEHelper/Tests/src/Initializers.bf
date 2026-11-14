@@ -40,5 +40,15 @@ namespace Tests
 			Test.Assert(sa.mC == 456);
 			Test.Assert(sa.mD == 791907);
 		}
+
+		[Test]
+		public static void TestConditionalArms()
+		{
+			int d = -1;
+			let sa = d < 0 ? StructA() { mB = 1 } : StructA() { mB = 2 };
+			Test.Assert(sa.mB == 1);
+			StructA sb = d < 0 ? .() { mB = 3 } : .() { mB = 4 };
+			Test.Assert(sb.mB == 3);
+		}
 	}
 }
