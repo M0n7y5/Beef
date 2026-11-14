@@ -1865,7 +1865,10 @@ BfExpression* BfReducer::CreateExpression(BfAstNode* node, CreateExprFlags creat
 		}
 		else if (endNodeIdx != -1)
 		{
-			if (auto blockNode = BfNodeDynCast<BfBlock>(mVisitorPos.Get(endNodeIdx)))
+			int braceEndNodeIdx = -1;
+			// 'd < 0 ? P() { ... }' also reaches the block, through an unclosed '<'
+			if ((BfNodeIsA<BfBlock>(mVisitorPos.Get(endNodeIdx))) &&
+				(IsTypeReference(exprLeft, BfToken_LBrace, -1, &braceEndNodeIdx, NULL)) && (braceEndNodeIdx == endNodeIdx))
 			{
 				auto typeRef = CreateTypeRef(mVisitorPos.GetCurrent());
 				if (typeRef)
