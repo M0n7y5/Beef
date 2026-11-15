@@ -1,0 +1,6 @@
+FileVersion = 1
+Dependencies = {corlib = "*", Lib = "*"}
+
+[Project]
+Name = "Bug"
+StartupObject = "Bug.Program"

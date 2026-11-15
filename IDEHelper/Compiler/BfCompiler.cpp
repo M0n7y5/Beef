@@ -11110,6 +11110,27 @@ BF_EXPORT const char* BF_CALLTYPE BfCompiler_GetUsedOutputFileNames(BfCompiler* 
 				continue;
 			if (!bfCompiler->mHotState->mHotProject->mUsedModules.Contains(fileEntry.mModule))
 				continue;
+			bool canReference = true;
+			String objFileName = fileEntry.mFileName + BF_OBJ_EXT;
+			for (auto& moduleFileName : fileEntry.mModule->mOutFileNames)
+			{
+				if (moduleFileName.mFileName != objFileName)
+					continue;
+				for (auto project : moduleFileName.mProjects)
+				{
+					if (!bfCompiler->mHotState->mHotProject->ContainsReference(project))
+						canReference = false;
+				}
+			}
+			if (!canReference)
+			{
+				if ((flags & BfUsedOutputFlags_FlushQueuedHotFiles) != 0)
+				{
+					bfCompiler->mHotState->mQueuedOutFiles.RemoveAtFast(i);
+					i--;
+				}
+				continue;
+			}
 			if (outPathSet.Add(fileEntry.mFileName))
 				outPaths.Add(fileEntry.mFileName);
 
