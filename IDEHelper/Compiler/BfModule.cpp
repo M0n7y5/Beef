@@ -21872,7 +21872,12 @@ void BfModule::ProcessMethod(BfMethodInstance* methodInstance, bool isInlineDup,
 	if ((methodDeclaration == NULL) && (mCurMethodState == NULL))
 		UseDefaultSrcPos();
 
-	if ((mIsComptimeModule) && (methodDef->mIsStatic))
+	// A lambda with a closure takes the closure as 'this', so like a static method it needs no data of its declaring type
+	bool isClosureLambda = (mCurMethodState != NULL) && (mCurMethodState->mClosureState != NULL) &&
+		(mCurMethodState->mClosureState->mClosureType != NULL) && (mCurMethodState->mClosureState->mClosureType->IsClosure()) &&
+		(methodInstance->mMethodInfoEx != NULL) && (methodInstance->mMethodInfoEx->mClosureInstanceInfo != NULL) &&
+		(methodInstance->mMethodInfoEx->mClosureInstanceInfo == mCurMethodState->mClosureState->mClosureInstanceInfo);
+	if ((mIsComptimeModule) && ((methodDef->mIsStatic) || (isClosureLambda)))
 	{
 		PopulateType(mCurTypeInstance, BfPopulateType_AllowStaticMethods);
 	}

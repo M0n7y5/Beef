@@ -1026,5 +1026,22 @@ namespace Tests
 			Test.Assert(CountDeclaredMethods(typeof(CycleBase)) == CountDeclaredMethods(typeof(CycleTwin)));
 			Test.Assert(CycleDerived.cBaseMethodsSeen >= 0);
 		}
+
+		static class ClosureEmitter
+		{
+			[OnCompile(.TypeInit), Comptime]
+			static void Generate()
+			{
+				int offset = 10;
+				delegate int(int) add = scope (val) => val + offset;
+				Compiler.EmitTypeBody(typeof(Self), scope $"public const int cValue = {add(5)};");
+			}
+		}
+
+		[Test]
+		public static void TestClosureInTypeInit()
+		{
+			Test.Assert(ClosureEmitter.cValue == 15);
+		}
 	}
 }
