@@ -1,0 +1,20 @@
+# A hot compile must not load the object of a generic method specialised for a project the program does not link
+
+ShowFile("src/Program.bf")
+GotoText("//Start")
+ToggleBreakpoint()
+RunWithCompiling()
+# Win32 cannot evaluate these statics
+if (platform != "Win32") AssertEvalEquals("Lib.Factory.sMade", "1")
+if (platform != "Win32") AssertEvalEquals("Lib.Factory.sPlain", "1")
+
+ShowFile("Lib/src/Factory.bf")
+ToggleCommentAt("Change")
+ToggleCommentAt("ChangePlain")
+Compile()
+AssertCompileSucceeded()
+StepOver()
+StepOver()
+if (platform != "Win32") AssertEvalEquals("Lib.Factory.sPlain", "12")
+# The Windows debugger does not find the program's copy of a generic method's specialisation, so it keeps the old body
+if (platform == "Linux64") AssertEvalEquals("Lib.Factory.sMade", "12")
