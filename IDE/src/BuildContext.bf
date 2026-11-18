@@ -1787,6 +1787,21 @@ namespace IDE
 				if (!targetDir.IsEmpty)
 					Directory.CreateDirectory(targetDir).IgnoreError();
 			}
+			else if ((hotProject == null) && (!project.mNeedsTargetRebuild))
+			{
+				// A failed build can write objects that it never linked, and BeefBuild forgets that between runs
+				if (File.GetLastWriteTime(targetPath) case .Ok(let targetTime))
+				{
+					for (var fileName in bfFileNames)
+					{
+						if ((File.GetLastWriteTime(fileName) case .Ok(let fileTime)) && (fileTime > targetTime))
+						{
+							project.mNeedsTargetRebuild = true;
+							break;
+						}
+					}
+				}
+			}
 
 			if (project.mGeneralOptions.mTargetType == .BeefLib)
 			{
