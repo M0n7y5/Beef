@@ -2984,6 +2984,11 @@ BfExpression* BfReducer::CreateExpression(BfAstNode* node, CreateExprFlags creat
 						exprLeft = CreateInvocationExpression(exprLeft);
 						if (exprLeft == NULL)
 							return NULL;
+						if (outToken->mToken == BfToken_LParen)
+						{
+							if (auto initExpr = TryCreateInitializerExpression(exprLeft))
+								exprLeft = initExpr;
+						}
 						continue;
 					}
 				}
