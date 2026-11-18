@@ -1497,6 +1497,14 @@ BfExpression* BfReducer::CheckBinaryOperatorPrecedence(BfBinaryOperatorExpressio
 			}
 		}
 
+		if (nextBinaryOperatorExpression == NULL)
+		{
+			// A rotation can move the trailing conditional into our right operand, so rerun the hoist at the loop top
+			auto rightCondExpression = BfNodeDynCast<BfConditionalExpression>(checkBinOpExpression->mRight);
+			if ((rightCondExpression != NULL) && (rightCondExpression->mTrueExpression != NULL))
+				continue;
+		}
+
 		checkBinOpExpression = nextBinaryOperatorExpression;
 	}
 
@@ -3593,7 +3601,10 @@ BfUsingStatement* BfReducer::CreateUsingStatement(BfAstNode* node)
 			BfAstNode* outNode = mVisitorPos.Get(outNodeIdx);
 			BfAstNode* outNodeNext = mVisitorPos.Get(outNodeIdx + 1);
 			BfTokenNode* equalsNode = NULL;
-			if ((outNode != NULL) && (BfNodeIsA<BfIdentifierNode>(outNode)) && (BfNodeIsA<BfTokenNode>(outNodeNext)))
+			// 'cond ? b.F() : c' also matches type 'cond?' and name 'b'. ')' keeps a half-typed declaration parsing as one
+			auto outNodeNextToken = BfNodeDynCast<BfTokenNode>(outNodeNext);
+			if ((outNode != NULL) && (BfNodeIsA<BfIdentifierNode>(outNode)) && (outNodeNextToken != NULL) &&
+				((outNodeNextToken->GetToken() == BfToken_AssignEquals) || (outNodeNextToken->GetToken() == BfToken_RParen)))
 			{
 				auto typeRef = CreateTypeRefAfter(usingStatement);
 				if (typeRef == NULL)
