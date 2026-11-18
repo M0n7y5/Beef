@@ -167,6 +167,7 @@ for testpath in CompileFail001 Test1 SlotTest MemoryBreakTest BugW001 BugW003 Bu
 do
 	test_workspace IDE/Tests/$testpath
 done
+test_workspace IDE/Tests/BugW011
 
 for script in NewProject01 NewProject02
 do
