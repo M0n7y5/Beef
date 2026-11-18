@@ -35,6 +35,7 @@ ElfDbgModule::ElfDbgModule(DebugTarget* debugTarget) : DbgModule(debugTarget)
 	mTLSBssSize = 0;
 	mTLSMemSize = 0;
 	mTLSAlign = 1;
+	mIsRelocatable = false;
 }
 
 ElfDbgModule::~ElfDbgModule()
@@ -50,6 +51,88 @@ ElfDbgModule::~ElfDbgModule()
 	mEHFrameData = NULL;
 	delete [] mDebugAbbrevPtrData;
 	mDebugAbbrevPtrData = NULL;
+	for (auto sectionData : mRelocatedSections)
+		delete [] sectionData;
+	// The host owns a hot object's memory, so the base destructor must not release it
+	if (mIsRelocatable)
+		mImageBase = 0;
+}
+
+void ElfDbgModule::SetHotLinkInfo(addr_target imageAddr, int64 imageSize, const Array<addr_target>& sectionAddrs, const Array<uint64>& symbolAddrs)
+{
+	mImageBase = imageAddr;
+	mImageSize = (uint32)((imageSize + 0xFFF) & ~(int64)0xFFF);
+	mHotSectionAddrs = sectionAddrs;
+	mHotSymbolAddrs = symbolAddrs;
+}
+
+// Debug sections are relocated with the host linker's addresses, on private copies because the file is mapped read-only
+bool ElfDbgModule::RelocateDebugSections(const uint8* data, const Elf64_Shdr* shdrs, int numSections)
+{
+	for (int relaIdx = 0; relaIdx < numSections; relaIdx++)
+	{
+		auto& relaShdr = shdrs[relaIdx];
+		if (relaShdr.sh_type != SHT_RELA)
+			continue;
+		int targetIdx = (int)relaShdr.sh_info;
+		if ((targetIdx <= 0) || (targetIdx >= numSections) || (strncmp(mElfSections[targetIdx].mName, ".debug_", 7) != 0))
+			continue;
+		ElfSection& target = mElfSections[targetIdx];
+		if (target.mData == NULL)
+			continue;
+		if ((relaShdr.sh_link >= (uint32)numSections) || (shdrs[relaShdr.sh_link].sh_type != SHT_SYMTAB) ||
+			(mElfSections[relaShdr.sh_link].mData == NULL) || (mElfSections[relaIdx].mData == NULL))
+			return false;
+		int symCount = (int)(mElfSections[relaShdr.sh_link].mSize / (int64)sizeof(Elf64_Sym));
+
+		bool owned = false;
+		for (auto sectionData : mRelocatedSections)
+		{
+			if (sectionData == target.mData)
+				owned = true;
+		}
+		if (!owned)
+		{
+			uint8* copy = new uint8[target.mSize];
+			memcpy(copy, target.mData, (size_t)target.mSize);
+			mRelocatedSections.Add(copy);
+			target.mData = copy;
+		}
+		uint8* targetData = (uint8*)target.mData;
+
+		auto relas = (const Elf64_Rela*)mElfSections[relaIdx].mData;
+		int relaCount = (int)(mElfSections[relaIdx].mSize / (int64)sizeof(Elf64_Rela));
+		for (int entryIdx = 0; entryIdx < relaCount; entryIdx++)
+		{
+			auto& rela = relas[entryIdx];
+			uint32 relocType = ELF64_R_TYPE(rela.r_info);
+			int symIdx = (int)ELF64_R_SYM(rela.r_info);
+			if (relocType == R_X86_64_NONE)
+				continue;
+			int relocSize = ((relocType == R_X86_64_64) || (relocType == R_X86_64_DTPOFF64)) ? 8 : 4;
+			if ((symIdx >= symCount) || (symIdx >= (int)mHotSymbolAddrs.size()) || (!RangeInFile(rela.r_offset, relocSize, target.mSize)))
+				return false;
+			uint64 value = mHotSymbolAddrs[symIdx] + (uint64)rela.r_addend;
+			switch (relocType)
+			{
+			case R_X86_64_64:
+			case R_X86_64_DTPOFF64:
+				memcpy(targetData + rela.r_offset, &value, 8);
+				break;
+			case R_X86_64_32:
+			case R_X86_64_32S:
+			case R_X86_64_DTPOFF32:
+				{
+					uint32 value32 = (uint32)value;
+					memcpy(targetData + rela.r_offset, &value32, 4);
+				}
+				break;
+			default:
+				return false;
+			}
+		}
+	}
+	return true;
 }
 
 const ElfSection* ElfDbgModule::FindSection(const char* name)
@@ -69,8 +152,25 @@ addr_target ElfDbgModule::RemapAddr(addr_target addr)
 	return addr + (addr_target)(mImageBase - mPreferredImageBase);
 }
 
+// The file is mapped read-only, so a name is copied before it is edited
+bool ElfDbgModule::DbgIsStrMutable(const char* str)
+{
+	if ((mMappedFile.mData != NULL) && (str >= (const char*)mMappedFile.mData) && (str < (const char*)mMappedFile.mData + mMappedFile.mFileSize))
+		return false;
+	if (IsObjectFile())
+		return GetLinkedModule()->DbgIsStrMutable(str);
+	return true;
+}
+
 bool ElfDbgModule::ResolveTLSAddress(addr_target operand, CPURegisters* registers, addr_target& outAddr)
 {
+	// A hot object's thread-locals are placed in the TLS block of the module it was linked into
+	if (mIsRelocatable)
+	{
+		DbgModule* linkedModule = GetLinkedModule();
+		return (linkedModule != this) && (linkedModule->ResolveTLSAddress(operand, registers, outAddr));
+	}
+
 	if ((mTLSMemSize == 0) || (registers == NULL))
 		return false;
 
@@ -123,10 +223,11 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 	auto ehdr = (const Elf64_Ehdr*)data;
 	if ((ehdr->e_ident[EI_CLASS] != ELFCLASS64) || (ehdr->e_ident[EI_DATA] != ELFDATA2LSB) || (ehdr->e_machine != EM_X86_64))
 		return false;
-	if ((ehdr->e_type != ET_EXEC) && (ehdr->e_type != ET_DYN))
+	mIsRelocatable = (ehdr->e_type == ET_REL) && (moduleKind == DbgModuleKind_HotObject) && ((int)mHotSectionAddrs.size() == ehdr->e_shnum);
+	if ((ehdr->e_type != ET_EXEC) && (ehdr->e_type != ET_DYN) && (!mIsRelocatable))
 		return false;
-	if ((ehdr->e_phentsize != sizeof(Elf64_Phdr)) || (ehdr->e_shentsize != sizeof(Elf64_Shdr)) || (ehdr->e_shnum == 0) ||
-		(!TableInFile(ehdr->e_phoff, ehdr->e_phnum, sizeof(Elf64_Phdr), size)) ||
+	if (((!mIsRelocatable) && (ehdr->e_phentsize != sizeof(Elf64_Phdr))) || (ehdr->e_shentsize != sizeof(Elf64_Shdr)) || (ehdr->e_shnum == 0) ||
+		((!mIsRelocatable) && (!TableInFile(ehdr->e_phoff, ehdr->e_phnum, sizeof(Elf64_Phdr), size))) ||
 		(!TableInFile(ehdr->e_shoff, ehdr->e_shnum, sizeof(Elf64_Shdr), size)) ||
 		(ehdr->e_shstrndx >= ehdr->e_shnum))
 		return false;
@@ -134,7 +235,7 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 	addr_target lowAddr = (addr_target)-1;
 	addr_target highAddr = 0;
 	auto phdrs = (const Elf64_Phdr*)(data + ehdr->e_phoff);
-	for (int phdrIdx = 0; phdrIdx < ehdr->e_phnum; phdrIdx++)
+	for (int phdrIdx = 0; (!mIsRelocatable) && (phdrIdx < ehdr->e_phnum); phdrIdx++)
 	{
 		auto& phdr = phdrs[phdrIdx];
 		if (phdr.p_type == PT_TLS)
@@ -153,6 +254,11 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 		lowAddr = BF_MIN(lowAddr, (addr_target)phdr.p_vaddr & ~(align - 1));
 		highAddr = BF_MAX(highAddr, (addr_target)(phdr.p_vaddr + phdr.p_memsz));
 	}
+	if (mIsRelocatable)
+	{
+		lowAddr = mImageBase;
+		highAddr = mImageBase + mImageSize;
+	}
 	if (lowAddr > highAddr)
 		return false;
 
@@ -163,7 +269,7 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 	mImageSize = (uint32)(((highAddr - lowAddr) + 0xFFF) & ~(addr_target)0xFFF);
 	mEntryPoint = ehdr->e_entry - lowAddr;
 
-	for (int phdrIdx = 0; phdrIdx < ehdr->e_phnum; phdrIdx++)
+	for (int phdrIdx = 0; (!mIsRelocatable) && (phdrIdx < ehdr->e_phnum); phdrIdx++)
 	{
 		auto& phdr = phdrs[phdrIdx];
 		if (phdr.p_type != PT_LOAD)
@@ -192,10 +298,30 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 		if ((shdr.sh_type != SHT_NOBITS) && ((shdr.sh_flags & SHF_COMPRESSED) == 0) && (RangeInFile(shdr.sh_offset, shdr.sh_size, size)))
 			section.mData = data + shdr.sh_offset;
 		section.mSize = (int64)shdr.sh_size;
-		section.mAddress = (addr_target)shdr.sh_addr;
+		section.mAddress = mIsRelocatable ? mHotSectionAddrs[sectIdx] : (addr_target)shdr.sh_addr;
 		section.mType = shdr.sh_type;
 		section.mFlags = shdr.sh_flags;
 		mElfSections.Add(section);
+
+		if ((mIsRelocatable) && (section.mAddress != 0) && ((shdr.sh_flags & SHF_EXECINSTR) != 0))
+		{
+			DbgSection dbgSection;
+			dbgSection.mName = "LOAD";
+			dbgSection.mAddrStart = section.mAddress - mImageBase;
+			dbgSection.mAddrLength = (addr_target)shdr.sh_size;
+			dbgSection.mIsExecutable = true;
+			mSections.Add(dbgSection);
+		}
+	}
+
+	if ((mIsRelocatable) && (!RelocateDebugSections(data, shdrs, ehdr->e_shnum)))
+	{
+		DwarfFail("hot object debug info has a relocation that can't be applied");
+		for (auto& section : mElfSections)
+		{
+			if (strncmp(section.mName, ".debug_", 7) == 0)
+				section.mData = NULL;
+		}
 	}
 
 	// A section without data (compressed, NOBITS or empty) reads as absent, so a non-NULL pointer always has a size
@@ -221,7 +347,8 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 	mDebugRangesData = _GetSectionData(".debug_ranges", &mDebugRangesSize);
 	mDebugLocationData = _GetSectionData(".debug_loc", &mDebugLocationSize);
 	mDebugFrameData = _GetSectionData(".debug_frame", &mDebugFrameSize);
-	mEHFrameData = _GetSectionData(".eh_frame", &mEHFrameSize);
+	// A hot object's .eh_frame is not relocated, and LLDB unwinds hot code itself
+	mEHFrameData = mIsRelocatable ? NULL : _GetSectionData(".eh_frame", &mEHFrameSize);
 	if (mEHFrameData != NULL)
 		mEHFrameAddress = RemapAddr(FindSection(".eh_frame")->mAddress);
 	if ((mDebugInfoData == NULL) || (mDebugAbbrevData == NULL))
@@ -251,6 +378,30 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 	else
 		ReadSymbols(FindSection(".dynsym"), FindSection(".dynstr"));
 
+	if (mIsRelocatable)
+	{
+		// A hot object only declares its methods' types, so the methods go to the primary type as in COFF::MapCompileUnitMethods
+		bool addHotTypes = mHotPrimaryTypes.size() == 0;
+		for (int typeIdx = mStartTypeIdx; typeIdx < mEndTypeIdx; typeIdx++)
+		{
+			DbgType* dbgType = linkedModule->mTypes[typeIdx];
+			if ((!dbgType->mIsDeclaration) || (dbgType->mMethodList.IsEmpty()))
+				continue;
+			DbgType* primaryType = dbgType->GetPrimaryType();
+			if (primaryType == dbgType)
+				continue;
+			while (!dbgType->mMethodList.IsEmpty())
+			{
+				DbgSubprogram* method = dbgType->mMethodList.PopFront();
+				method->mParentType = primaryType;
+				primaryType->mMethodList.PushBack(method);
+			}
+			if (addHotTypes)
+				mHotPrimaryTypes.Add(primaryType);
+		}
+		HotReplaceTypes();
+	}
+
 	RemoveUnusedSrcFiles();
 
 	mLoadState = DbgModuleLoadState_Loaded;
@@ -273,8 +424,20 @@ void ElfDbgModule::ReadSymbols(const ElfSection* symTab, const ElfSection* strTa
 		int symType = ELF64_ST_TYPE(sym.st_info);
 		if ((symType != STT_FUNC) && (symType != STT_OBJECT))
 			continue;
-		if ((sym.st_shndx == SHN_UNDEF) || (sym.st_value == 0))
-			continue;
+		addr_target address = 0;
+		if (mIsRelocatable)
+		{
+			// A hot object's data binds to the original storage, so only its code has addresses of its own
+			if ((symType != STT_FUNC) || (sym.st_shndx >= (int)mHotSectionAddrs.size()) || (mHotSectionAddrs[sym.st_shndx] == 0))
+				continue;
+			address = mHotSectionAddrs[sym.st_shndx] + (addr_target)sym.st_value;
+		}
+		else
+		{
+			if ((sym.st_shndx == SHN_UNDEF) || (sym.st_value == 0))
+				continue;
+			address = RemapAddr((addr_target)sym.st_value);
+		}
 		const char* name = GetBoundedString(strTab->mData, strTab->mSize, sym.st_name);
 		if (name == NULL)
 			continue;
@@ -282,9 +445,9 @@ void ElfDbgModule::ReadSymbols(const ElfSection* symTab, const ElfSection* strTa
 		DbgSymbol* dbgSymbol = mAlloc.Alloc<DbgSymbol>();
 		dbgSymbol->mDbgModule = this;
 		dbgSymbol->mName = name;
-		dbgSymbol->mAddress = RemapAddr((addr_target)sym.st_value);
+		dbgSymbol->mAddress = address;
 		mDebugTarget->mSymbolMap.Insert(dbgSymbol);
-		if (ELF64_ST_BIND(sym.st_info) != STB_LOCAL)
+		if ((ELF64_ST_BIND(sym.st_info) != STB_LOCAL) && (!mIsRelocatable))
 			linkedModule->mSymbolNameMap.Insert(dbgSymbol);
 	}
 }

@@ -577,6 +577,8 @@ public:
 	DbgExtType mExtType;
 	DbgTypePriority mPriority; // Is the one stored in the type map
 	bool mSizeCalculated;
+	bool mSizeIsStride;
+	bool mSizeIsCount;
 
 	DbgType* mNext;
 
@@ -1318,6 +1320,7 @@ public:
 	bool HasHotReplacedMethods(DbgType* type);
 	void HotReplaceMethods(DbgType* newType, DbgType* primaryType);
 	void HotReplaceType(DbgType* newType);
+	void HotReplaceTypes();
 	void ProcessHotSwapVariables();
 	virtual bool LoadPDB(const String& pdbPath, uint8 wantGuid[16], int32 wantAge) { return false; }
 	virtual bool CheckSection(const char* name, uint8* sectionData, int sectionSize) { return false; }
@@ -1346,6 +1349,7 @@ public:
 	virtual bool ReadImage(DataStream* stream, DbgModuleKind dbgModuleKind) { return ReadCOFF(stream, dbgModuleKind); }
 	// COFF images can also carry GNU DWARF, whose inline handling stays as it was
 	virtual bool WantsDwarfInlineContexts() { return false; }
+	virtual bool WritesHotCode() { return true; }
 	virtual bool ResolveTLSAddress(addr_target operand, CPURegisters* registers, addr_target& outAddr);
 	void RemoveTargetData();
 	virtual void ReportMemory(MemReporter* memReporter);

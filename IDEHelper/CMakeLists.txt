@@ -216,12 +216,14 @@ if (BF_DBG_HOST AND NOT MSVC)
     DbgTypeMap.cpp
     DbgExprEvaluator.cpp
     DbgEvalSupport.cpp
+    DbgEvaluate.cpp
+    DbgValueFormat.cpp
     DbgSymbolSupport.cpp
     DbgEvalPool.cpp
     HotHeap.cpp
   )
   if (UNIX AND NOT APPLE)
-    list(APPEND DBG_HOST_FILES ElfDbgModule.cpp)
+    list(APPEND DBG_HOST_FILES ElfDbgModule.cpp DbgCallConvSysV.cpp)
   endif()
   set_source_files_properties(${DBG_HOST_FILES} PROPERTIES COMPILE_DEFINITIONS BF_DBG_64)
   list(APPEND SRC_FILES ${DBG_HOST_FILES})

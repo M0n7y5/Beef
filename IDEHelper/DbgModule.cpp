@@ -311,6 +311,38 @@ void DbgLineDataBuilder::Commit()
 
 //////////////////////////////////////////////////////////////////////////
 
+// -1 when the name has no parameter list
+static int DemangledParamCount(const StringImpl& name)
+{
+	if ((name.IsEmpty()) || (name[name.length() - 1] != ')'))
+		return -1;
+	int depth = 0;
+	int count = 0;
+	bool hasChars = false;
+	for (int i = (int)name.length() - 1; i >= 0; i--)
+	{
+		char c = name[i];
+		if ((c == ')') || (c == '>') || (c == ']'))
+		{
+			if (depth > 0)
+				hasChars = true;
+			depth++;
+		}
+		else if ((c == '(') || (c == '<') || (c == '['))
+		{
+			depth--;
+			if (depth == 0)
+				return hasChars ? count + 1 : 0;
+			hasChars = true;
+		}
+		else if ((c == ',') && (depth == 1))
+			count++;
+		else if ((depth > 0) && (c != ' '))
+			hasChars = true;
+	}
+	return -1;
+}
+
 static const char* DataGetString(const uint8*& data)
 {
 	const char* prevVal = (const char*)data;
@@ -1085,6 +1117,8 @@ DbgType::DbgType()
 	mTypeName = NULL;
 	mTypeCode = DbgType_Null;
 	mSize = 0;
+	mSizeIsStride = false;
+	mSizeIsCount = false;
 	mPtrType = NULL;
 	mTypeParam = NULL;
 	mBlockParam = NULL;
@@ -2095,6 +2129,20 @@ intptr DbgType::GetByteCount()
 					mAlign = primaryType->mAlign;
 				}
 			}
+			if (mSizeIsStride)
+			{
+				mSizeCalculated = true;
+				intptr dataSize = 0;
+				for (auto baseTypeEntry : mBaseTypes)
+					dataSize = BF_MAX(dataSize, (intptr)baseTypeEntry->mThisOffset + baseTypeEntry->mBaseType->GetByteCount());
+				for (auto member : mMemberList)
+				{
+					if ((!member->mIsStatic) && (member->mType != NULL))
+						dataSize = BF_MAX(dataSize, (intptr)member->mMemberOffset + member->mType->GetByteCount());
+				}
+				if ((dataSize > 0) && (dataSize < mSize))
+					mSize = dataSize;
+			}
 		}
 		else if ((mTypeCode == DbgType_Ref) || (mTypeCode == DbgType_Ptr) || (mTypeCode == DbgType_PtrToMember))
 		{
@@ -2103,6 +2151,14 @@ intptr DbgType::GetByteCount()
 #else
 			mSize = 8;
 #endif
+		}
+		else if ((mTypeCode == DbgType_SizedArray) && (mSizeIsCount))
+		{
+			// mSize holds the element count, and the byte count omits the last element's padding as CodeView does
+			auto primaryType = mTypeParam->GetPrimaryType();
+			intptr elemCount = mSize;
+			mSize = (elemCount > 0) ? ((elemCount - 1) * primaryType->GetStride()) + primaryType->GetByteCount() : 0;
+			mAlign = primaryType->GetAlign();
 		}
 		else if (mTypeCode == DbgType_SizedArray)
 		{
@@ -3563,6 +3619,10 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 	Array<AbstractOriginEntry> abstractOriginReplaceList;
 
 	Array<int> deferredArrayDims;
+	HashSet<DbgSubprogram*> splatSubprograms;
+	HashSet<DbgSubprogram*> localThisCandidates;
+	Dictionary<String, DbgSubprogram*> declSubprograms;
+	Dictionary<String, DbgSubprogram*> defSubprograms;
 	bool wantsInlineContexts = WantsDwarfInlineContexts();
 	Array<DbgInlineeRange> dieInlineeRanges;
 
@@ -3605,6 +3665,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					break;
 				}
 				arrType->mSize = deferredArrayDims[0]; // Byte count still needs to be multiplied by the underlying type size
+				arrType->mSizeIsCount = compileUnit->mLanguage == DbgLanguage_Beef;
 
 				DbgType* rootArrType = arrType;
 				for (int dimIdx = 0; dimIdx < (int)deferredArrayDims.size() - 1; dimIdx++)
@@ -3620,6 +3681,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					subArrType->mTypeCode = DbgType_SizedArray;
 					subArrType->mTypeParam = arrType->mTypeParam;
 					subArrType->mSize = deferredArrayDims[dimIdx + 1];
+					subArrType->mSizeIsCount = arrType->mSizeIsCount;
 
 					arrType->mTypeParam = subArrType;
 					arrType = subArrType;
@@ -3665,6 +3727,7 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 		int atArtificial = 0;
 		int atExternal = 0;
 		int atByteSize = -1;
+		int atAlignment = 0;
 		int atEncoding = 0;
 		int atSpecification = 0;
 		int atObjectPointer = 0;
@@ -3704,6 +3767,9 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				break;
 			case DW_AT_byte_size:
 				atByteSize = ReadValue<int>(data, form);
+				break;
+			case DW_AT_alignment:
+				atAlignment = ReadValue<int>(data, form);
 				break;
 			case DW_AT_bit_offset:
 				atBitOffset = ReadValue<int>(data, form);
@@ -4110,6 +4176,13 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					subProgram->mName = atName;
 
 					subProgram->mLinkName = atLinkageName;
+					if ((atLinkageName != NULL) && (compileUnit->mLanguage == DbgLanguage_Beef))
+					{
+						if (atDeclaration)
+							declSubprograms[atLinkageName] = subProgram;
+						else
+							defSubprograms[atLinkageName] = subProgram;
+					}
 					if (atAbstractOrigin != 0)
 					{
 						DbgSubprogram* originSubProgram = GetOrCreate<DbgSubprogram*>(atAbstractOrigin, dataMap);
@@ -4318,6 +4391,9 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				{
 					dbgVariable = GetOrCreate<DbgVariable*>(tagIdx, dataMap);
 					dwBlock->mVariables.PushBack(dbgVariable);
+					DbgSubprogram* blockSubprogram = GetStackTop<DbgSubprogram*>(&dataStack);
+					if ((compileUnit->mLanguage == DbgLanguage_Beef) && (blockSubprogram != NULL) && (dwBlock == &blockSubprogram->mBlock) && (blockSubprogram->mParams.IsEmpty()))
+						localThisCandidates.Add(blockSubprogram);
 				}
 				else
 				{
@@ -4456,6 +4532,19 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				dwVariable->mLocationLen = (int)atLocationLen;
 				dwVariable->mLocationData = atLocationData;
 				dwVariable->mType = GetOrCreateType(atType, dataMap);
+				if ((atName != NULL) && (atName[0] == '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
+					splatSubprograms.Add(dwSubprogram);
+				// A parameter with a default is named "c$1000", or "c$_1000" for a negative value
+				if ((atName != NULL) && (atName[0] != '$') && (compileUnit->mLanguage == DbgLanguage_Beef))
+				{
+					const char* dollarPos = strchr(atName + 1, '$');
+					if ((dollarPos != NULL) && ((dollarPos[1] == '_') || ((dollarPos[1] >= '0') && (dollarPos[1] <= '9'))))
+					{
+						dwVariable->mIsConst = true;
+						dwVariable->mConstValue = (dollarPos[1] == '_') ? -atoll(dollarPos + 2) : atoll(dollarPos + 1);
+						dwVariable->mName = DbgDupString(String(atName, (int)(dollarPos - atName)).c_str());
+					}
+				}
 
 				if (atAbstractOrigin != 0)
 				{
@@ -4551,6 +4640,12 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				if ((atName != NULL) && (strncmp(atName, "_vptr$", 6) == 0))
 				{
 					parentType->mHasVTable = true;
+					break;
+				}
+				// A typed primitive exposes its "$prim" field's type as mTypeParam, as COFF::ParseTypeData does
+				if ((atName != NULL) && (compileUnit->mLanguage == DbgLanguage_Beef) && (strcmp(atName, "$prim") == 0))
+				{
+					parentType->mTypeParam = GetOrCreateType(atType, dataMap);
 					break;
 				}
 				//DbgVariable* member = mAlloc.Alloc<DbgVariable>();
@@ -4706,8 +4801,14 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 				if (atByteSize != -1)
 				{
 					dbgType->mSize = atByteSize;
-					dbgType->mSizeCalculated = true;
+					// For a Beef value type DWARF's byte size is the stride, but sizeof is the data size
+					if ((entryTag == DW_TAG_structure_type) && (atByteSize > 0) && (compileUnit->mLanguage == DbgLanguage_Beef))
+						dbgType->mSizeIsStride = true;
+					else
+						dbgType->mSizeCalculated = true;
 				}
+				if ((atAlignment > 0) && (compileUnit->mLanguage == DbgLanguage_Beef))
+					dbgType->mAlign = atAlignment;
 
 				switch (entryTag)
 				{
@@ -4716,7 +4817,17 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 					switch (atEncoding)
 					{
 					case DW_ATE_UTF:
-						if (atByteSize == 1)
+						// The formatter knows Beef's char types as the UChar primitives, as CodeView maps them
+						if (compileUnit->mLanguage == DbgLanguage_Beef)
+						{
+							if (atByteSize == 1)
+								dbgType->mTypeCode = DbgType_UChar;
+							else if (atByteSize == 2)
+								dbgType->mTypeCode = DbgType_UChar16;
+							else
+								dbgType->mTypeCode = DbgType_UChar32;
+						}
+						else if (atByteSize == 1)
 							dbgType->mTypeCode = DbgType_Utf8;
 						else if (atByteSize == 2)
 							dbgType->mTypeCode = DbgType_Utf16;
@@ -4928,6 +5039,160 @@ bool DbgModule::ParseDWARF(const uint8*& dataPtr)
 
 	for (auto& abstractOriginEntry : abstractOriginReplaceList)
 		abstractOriginEntry.Replace();
+
+	// A mixin's 'this' is a local, and COFF's MakeThis also adds it as a parameter
+	for (auto subprogram : localThisCandidates)
+	{
+		if ((subprogram->mHasThis) || (!subprogram->mParams.IsEmpty()))
+			continue;
+		DbgVariable* thisVariable = NULL;
+		for (auto variable : subprogram->mBlock.mVariables)
+		{
+			if ((variable->mName != NULL) && (variable->mType != NULL) && (strcmp(variable->mName, "this") == 0))
+				thisVariable = variable;
+		}
+		if (thisVariable == NULL)
+			continue;
+		DbgVariable* thisParam = mAlloc.Alloc<DbgVariable>();
+		thisParam->mCompileUnit = compileUnit;
+		thisParam->mIsParam = true;
+		thisParam->mName = "this";
+		subprogram->mParams.PushFront(thisParam);
+		subprogram->mHasThis = true;
+		if (subprogram->mParentType == NULL)
+		{
+			DbgType* thisType = thisVariable->mType->RemoveModifiers();
+			if (thisType->IsPointer())
+				thisType = thisType->mTypeParam;
+			subprogram->mParentType = thisType;
+		}
+	}
+
+	// The evaluator expects CodeView's shape: a location-less parameter per splat and its "$name$" fields as locals.
+	// DWARF has only the fields, so the parameter is added, typed by the declaration's parameter
+	for (auto subprogram : splatSubprograms)
+	{
+		Array<DbgType*> declTypes;
+		DbgSubprogram* declSubprogram = NULL;
+		if ((subprogram->mLinkName != NULL) && (declSubprograms.TryGetValue(subprogram->mLinkName, &declSubprogram)))
+		{
+			for (auto param : declSubprogram->mParams)
+				declTypes.Add(param->mType);
+		}
+		Array<DbgVariable*> params;
+		for (auto param : subprogram->mParams)
+			params.Add(param);
+		Array<DbgVariable*> newParams;
+		Array<DbgVariable*> splatFields;
+		int declIdx = 0;
+		String lastSplatName;
+		bool lastSplatMoved = false;
+		for (auto param : params)
+		{
+			const char* nameEnd = ((param->mName != NULL) && (param->mName[0] == '$')) ? strchr(param->mName + 1, '$') : NULL;
+			if (nameEnd == NULL)
+			{
+				lastSplatName.Clear();
+				declIdx++;
+				newParams.Add(param);
+				continue;
+			}
+			String splatName(param->mName + 1, (int)(nameEnd - param->mName - 1));
+			if (splatName != lastSplatName)
+			{
+				lastSplatName = splatName;
+				DbgType* declType = (declIdx < declTypes.mSize) ? declTypes[declIdx] : NULL;
+				declIdx++;
+				DbgType* splatType = (splatName == "this") ? subprogram->mParentType : declType;
+				lastSplatMoved = splatType != NULL;
+				if (lastSplatMoved)
+				{
+					DbgVariable* splatVariable = mAlloc.Alloc<DbgVariable>();
+					splatVariable->mCompileUnit = compileUnit;
+					splatVariable->mIsParam = true;
+					splatVariable->mIsConst = true;
+					splatVariable->mName = DbgDupString(splatName.c_str());
+					splatVariable->mType = splatType;
+					newParams.Add(splatVariable);
+					if (splatName == "this")
+						subprogram->mHasThis = true;
+				}
+			}
+			if (lastSplatMoved)
+				splatFields.Add(param);
+			else
+				newParams.Add(param);
+		}
+		if (splatFields.IsEmpty())
+			continue;
+
+		Array<DbgVariable*> locals;
+		for (auto variable : subprogram->mBlock.mVariables)
+			locals.Add(variable);
+		subprogram->mParams.Clear();
+		subprogram->mBlock.mVariables.Clear();
+		for (auto param : newParams)
+			subprogram->mParams.PushBack(param);
+		// Locals as in CodeView, since Beef makes parameters read-only
+		for (auto field : splatFields)
+		{
+			field->mIsParam = false;
+			subprogram->mBlock.mVariables.PushBack(field);
+		}
+		for (auto variable : locals)
+			subprogram->mBlock.mVariables.PushBack(variable);
+	}
+
+	// The definition has no DW_AT_specification, but lookup finds the declaration, so it takes the definition's
+	// parameters, and in a hot object, whose symbols are not looked up by name, its address
+	for (auto& kv : declSubprograms)
+	{
+		DbgSubprogram* defSubprogram = NULL;
+		if (!defSubprograms.TryGetValue(kv.mKey, &defSubprogram))
+			continue;
+		DbgSubprogram* declSubprogram = kv.mValue;
+		declSubprogram->mParams = defSubprogram->mParams;
+		declSubprogram->mBlock.mVariables = defSubprogram->mBlock.mVariables;
+		declSubprogram->mHasThis = defSubprogram->mHasThis;
+		if (IsObjectFile())
+		{
+			declSubprogram->mBlock.mLowPC = defSubprogram->mBlock.mLowPC;
+			declSubprogram->mBlock.mHighPC = defSubprogram->mBlock.mHighPC;
+		}
+	}
+
+	// A declaration without a definition lists 'this' unnamed and not artificial, found as one parameter more than the mangled name
+	for (auto& kv : declSubprograms)
+	{
+		DbgSubprogram* declSubprogram = kv.mValue;
+		DbgVariable* firstParam = declSubprogram->mParams.mHead;
+		if ((declSubprogram->mHasThis) || (firstParam == NULL) || (firstParam->mName != NULL) || (declSubprogram->mParentType == NULL))
+			continue;
+		int mangledCount = DemangledParamCount(BfDemangler::Demangle(kv.mKey, DbgLanguage_Beef));
+		if ((mangledCount < 0) || (declSubprogram->mParams.Size() != mangledCount + 1))
+			continue;
+		firstParam->mName = "this";
+		declSubprogram->mHasThis = true;
+	}
+
+	// The base type's name is only known once the unit is read
+	if (compileUnit->mLanguage == DbgLanguage_Beef)
+	{
+		for (int typeIdx = startingTypeIdx; typeIdx < (int)linkedModule->mTypes.size(); typeIdx++)
+		{
+			DbgType* dbgType = linkedModule->mTypes[typeIdx];
+			if ((dbgType->mTypeCode != DbgType_Struct) || (dbgType->mTypeParam == NULL) || (dbgType->mBaseTypes.mHead == NULL))
+				continue;
+			DbgType* baseType = dbgType->mBaseTypes.mHead->mBaseType;
+			if ((baseType != NULL) && (baseType->mTypeName != NULL) && (strcmp(baseType->mTypeName, "Enum") == 0))
+			{
+				dbgType->mTypeCode = DbgType_Enum;
+				// "$prim" is a nested enumeration, read through its underlying integer
+				if ((dbgType->mTypeParam->mTypeCode == DbgType_Enum) && (dbgType->mTypeParam->mTypeParam != NULL))
+					dbgType->mTypeParam = linkedModule->GetPrimitiveType(dbgType->mTypeParam->mTypeParam->mTypeCode, DbgLanguage_Beef);
+			}
+		}
+	}
 
 	GetLinkedModule()->MapTypes(startingTypeIdx);
 
@@ -6281,7 +6546,8 @@ void DbgModule::HotReplaceMethods(DbgType* newType, DbgType* primaryType)
 
 					if (!doHotJump)
 					{
-						mDebugTarget->mDebugger->PhysSetBreakpoint(oldMethod->mBlock.mLowPC);
+						if (WritesHotCode())
+							mDebugTarget->mDebugger->PhysSetBreakpoint(oldMethod->mBlock.mLowPC);
 						oldMethod->mHotReplaceKind = DbgSubprogram::HotReplaceKind_Invalid;
 					}
 				}
@@ -6289,7 +6555,9 @@ void DbgModule::HotReplaceMethods(DbgType* newType, DbgType* primaryType)
 
 			if (doHotJump)
 			{
-				if (!setHotJumpFailed)
+				if (!WritesHotCode())
+					_RemoveLineInfo(oldMethod);
+				else if (!setHotJumpFailed)
 				{
 					if (mDebugger->SetHotJump(oldMethod, newMethod->mBlock.mLowPC, (int)(newMethod->mBlock.mHighPC - newMethod->mBlock.mLowPC)))
 					{
@@ -6364,6 +6632,46 @@ void DbgModule::HotReplaceMethods(DbgType* newType, DbgType* primaryType)
 			primaryType->mMethodList.PushBack(newMethod);
 		}
 	}
+}
+
+void DbgModule::HotReplaceTypes()
+{
+	auto linkedModule = GetLinkedModule();
+
+	// In COFF, we don't necessarily add an actual primary type during MapCompileUnitMethods, so this fixes that
+	while (true)
+	{
+		bool didReplaceType = false;
+		for (auto itr = mHotPrimaryTypes.begin(); itr != mHotPrimaryTypes.end(); ++itr)
+		{
+			auto dbgType = *itr;
+			auto primaryType = dbgType->GetPrimaryType();
+
+			if ((primaryType->mHotNewType == NULL) && (HasHotReplacedMethods(primaryType)) && (dbgType == primaryType))
+			{
+				HotReplaceMethods(dbgType, primaryType);					
+			}
+
+			if (primaryType != dbgType)
+			{
+				mHotPrimaryTypes.Remove(itr);
+				mHotPrimaryTypes.Add(primaryType);
+				didReplaceType = true;
+				break;
+			}				
+		}
+		if (!didReplaceType)
+			break;
+	}		
+
+	BF_ASSERT(mTypes.size() == 0);
+	for (int typeIdx = mStartTypeIdx; typeIdx < (int)linkedModule->mTypes.size(); typeIdx++)
+	{
+		DbgType* newType = linkedModule->mTypes[typeIdx];
+		//if (!newType->mMethodList.IsEmpty())
+		if (!newType->mIsDeclaration)
+			HotReplaceType(newType);
+	}		
 }
 
 void DbgModule::HotReplaceType(DbgType* newType)
@@ -7345,42 +7653,7 @@ bool DbgModule::ReadCOFF(DataStream* stream, DbgModuleKind moduleKind)
 		lineDataCount, mEndTypeIdx - mStartTypeIdx, (int)linkedModule->mTypes.size() - mStartTypeIdx, mEndSubprogramIdx - mStartSubprogramIdx, subProgramSizes / 1024, mAlloc.GetAllocSize() / 1024);*/
 
 	if (isHotSwap)
-	{
-		// In COFF, we don't necessarily add an actual primary type during MapCompileUnitMethods, so this fixes that
-		while (true)
-		{
-			bool didReplaceType = false;
-			for (auto itr = mHotPrimaryTypes.begin(); itr != mHotPrimaryTypes.end(); ++itr)
-			{
-				auto dbgType = *itr;
-				auto primaryType = dbgType->GetPrimaryType();
-
-				if ((primaryType->mHotNewType == NULL) && (HasHotReplacedMethods(primaryType)) && (dbgType == primaryType))
-				{
-					HotReplaceMethods(dbgType, primaryType);					
-				}
-
-				if (primaryType != dbgType)
-				{
-					mHotPrimaryTypes.Remove(itr);
-					mHotPrimaryTypes.Add(primaryType);
-					didReplaceType = true;
-					break;
-				}				
-			}
-			if (!didReplaceType)
-				break;
-		}		
-
-		BF_ASSERT(mTypes.size() == 0);
-		for (int typeIdx = mStartTypeIdx; typeIdx < (int)linkedModule->mTypes.size(); typeIdx++)
-		{
-			DbgType* newType = linkedModule->mTypes[typeIdx];
-			//if (!newType->mMethodList.IsEmpty())
-			if (!newType->mIsDeclaration)
-				HotReplaceType(newType);
-		}		
-	}
+		HotReplaceTypes();
 
 	if (needHotTargetMemory != 0)
 	{
@@ -7574,7 +7847,8 @@ bool DbgModule::ResolveTLSAddress(addr_target operand, CPURegisters* registers, 
 
 addr_target DbgModule::ExecuteOps(DbgSubprogram* dwSubprogram, const uint8* locData, int locDataLen, WdStackFrame* stackFrame, CPURegisters* registers, DbgAddrType* outAddrType, DbgEvalLocFlags flags, addr_target* pushValue)
 {
-	bool allowReg = (flags & DbgEvalLocFlag_IsParam) == 0;
+	// DW_OP_fbreg needs the frame base as an address, never a register number
+	bool allowReg = (flags & (DbgEvalLocFlag_IsParam | DbgEvalLocFlag_DisallowReg)) == 0;
 
 	const uint8* locDataEnd = locData + locDataLen;
 	int regNum = -1;

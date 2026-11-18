@@ -187,6 +187,7 @@ enum Attribute
 	DW_AT_dwo_name = 0x76,
 	DW_AT_reference = 0x77,
 	DW_AT_rvalue_reference = 0x78,
+	DW_AT_alignment = 0x88,
 
 	DW_AT_lo_user = 0x2000,
 	DW_AT_hi_user = 0x3fff,

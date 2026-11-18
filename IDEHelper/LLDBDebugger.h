@@ -17,7 +17,7 @@
 #pragma warning(disable:4251)
 #include "lldb/API/LLDB.h"
 #include "DbgTargetHost.h"
-#include <atomic>
+#include "DbgCallConvSysV.h"
 
 NS_BF_BEGIN
 
@@ -36,6 +36,9 @@ public:
 	bool mBreakAfterLogging = false;
 	lldb::SBBreakpoint mLLDBBreakpoint;
 	Array<lldb::SBBreakpoint> mVersionBreakpoints;   // bindings in older hot compiles (HotBindBreakpoint)
+	Array<lldb::SBBreakpoint> mAddressBreakpoints;   // DebugTarget's binding, while mLLDBBreakpoint stays disabled
+	Array<uintptr> mAddresses;
+	bool mHostDisabled = false;
 	uintptr mResolvedAddr;
 	Array<int> mWatchpointIds;                       // for a memory breakpoint: its LLDB watchpoints
 	int mMemoryBreakpointSize;
@@ -46,35 +49,7 @@ public:
 	virtual bool IsMemoryBreakpointBound() override { return !mWatchpointIds.IsEmpty(); }
 };
 
-// An evaluation that calls into the program, run on its own thread (see LLDBDebugger::Evaluate)
-class LLDBPendingEval
-{
-public:
-	String mExpr;
-	DwEvalExpressionFlags mFlags;
-	lldb::SBFrame mFrame;
-	lldb::tid_t mThreadId;
-	String mResult;
-	std::atomic<bool> mDone;
-	bool mCanceled;
-	int mIdleTicks;
-	BfpThread* mThread;
-	std::atomic<BfpThreadId> mWorkerThreadId; // set by the worker itself, before it touches the target
-
-	LLDBPendingEval()
-	{
-		mFlags = DwEvalExpressionFlag_None;
-		mThreadId = 0;
-		mDone = false;
-		mCanceled = false;
-		mIdleTicks = 0;
-		mThread = NULL;
-		mWorkerThreadId = 0;
-	}
-};
-
 struct LLDBHotObject;
-struct LLDBFormatInfo;
 
 class LLDBDebugger : public NS_BF_DBG::DbgTargetHost
 {
@@ -87,6 +62,16 @@ public:
 	Array<lldb::SBFrame> mLLDBFrames;
 	bool mCallStackDirty;
 	bool mHostFramesLive;
+	CPURegisters mSavedRegisters;
+	Array<NS_BF_DBG::DbgSysVPart> mEvalReturnParts;
+	addr_target mEvalReturnSlot;                    // 0 for an sret return
+	addr_target mEvalTrapAddr;
+	lldb::SBBreakpoint mEvalTrapBreakpoint;
+	uint64 mEvalThreadId;
+	uint32 mEvalStartTick;
+	bool mHasSavedRegisters;
+	String mSavedRegisterStateId;
+	uint64 mSavedRegisterThreadId;
 	Array<int> mHostFrameMap;
 	Array<int> mHostFrameGroupStart;                // per concrete frame: the index in mLLDBFrames of its innermost inlined frame
 
@@ -129,24 +114,25 @@ public:
 		StepKind_Out
 	};
 	StepKind mStepKind;
+	enum StepCall
+	{
+		StepCall_Into,
+		StepCall_Over,
+		StepCall_Out
+	};
+	StepCall mStepIssueCall;
+	bool mStepUnfiltered;
+	lldb::SBBreakpoint mStepSpecificBreakpoint;
 	bool mStepOutThenInto;
 	bool mStepOutFinishedLine;
 	int mStepStartLine;                              // where the current step began
 	String mStepStartFile;
 	int mStepContinueCount;
+	uint64 mStepIssuePC;
+	uint64 mStepIssueSP;
 	int mStepNoInfoTries;                            // instruction steps taken through code without line info
 	uint64 mStepStartFunctionAddr;
 	Dictionary<String, bool> mHasStatementLinesCache;
-
-	// The evaluation in progress (see Evaluate)
-	lldb::SBExpressionOptions mEvalOptions;
-	bool mEvalAllowCalls;
-	bool mEvalAllowProperties;
-	bool mEvalProbeCalls;            // a call isn't made but noted in mEvalWantsCall, so the evaluation can move to a pending one
-	bool mEvalWantsCall;
-	bool mEvalInPendingThread;
-	String mEvalError;               // why a path failed (a property getter or indexer)
-	LLDBPendingEval* mPendingEval;   // running, or finished with its result not yet collected
 
 	// Exception info (populated when RunState_Exception is set)
 	uint64 mExceptionAddress;
@@ -297,36 +283,14 @@ protected:
 	void BeginStep(lldb::SBThread& thread, StepKind stepKind);
 	bool FunctionHasStatementLines(lldb::SBFunction& function);
 	bool IsStepFiltered(lldb::SBFunction& function);
+	void IssueStep(lldb::SBThread& thread, StepCall stepCall);
+	void ClearStepSpecific();
 	bool ContinueStep(lldb::SBThread& thread);
 	lldb::SBThread SelectStoppedThread();
-	lldb::SBValue FindSplatVariable(lldb::SBFrame& frame, const StringImpl& name);
-	lldb::SBValue FindSplatMember(lldb::SBFrame& frame, lldb::SBValue value, const StringImpl& name);
-	lldb::SBValue FindFrameThis(lldb::SBFrame& frame);
-	lldb::SBValue EvaluateBeefPath(lldb::SBFrame& frame, const StringImpl& expr);
-	lldb::SBValue EvaluateInThisContext(lldb::SBFrame& frame, const StringImpl& expr, const StringImpl& thisExpr, String& outText, String& outError);
-	lldb::SBValue FindFrameModuleGlobal(lldb::SBFrame& frame, const StringImpl& name);
-	bool HasGlobalNamed(const StringImpl& name);
-	lldb::SBType HotFindNewestType(const char* typeName);
-	lldb::SBValue HotFindStaticVariable(lldb::SBFrame& frame, const StringImpl& qualifier, const StringImpl& name);
 	bool HotFindThreadLocalOffset(const char* qualifiedName, uint64& outOffset);
-	lldb::SBValue HotFindMemberInNewestTypes(lldb::SBValue value, const StringImpl& name, int depth);
-	String RewriteBeefMemberAccess(lldb::SBFrame& frame, const StringImpl& expr);
-	String RewriteBeefMemberAccessInSpan(lldb::SBFrame& frame, const StringImpl& expr);
 	bool IsClosingBraceLine(lldb::SBLineEntry& lineEntry);
-	String BuildBreakpointLogText(const StringImpl& logging);
-	lldb::SBType FindBeefType(lldb::SBFrame& frame, const StringImpl& name);
-	lldb::SBType FindBeefTypeAnywhere(const StringImpl& typeName);
-	lldb::SBValue EvaluateBeefTupleAssign(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
-	String BuildAutocomplete(lldb::SBFrame& frame, const StringImpl& expr, int cursorPos);
-	String EvaluateMemoryWatch(lldb::SBFrame& frame, const StringImpl& expr, int arrayLength);
-	lldb::SBValue EvaluateBeefTypeOp(const StringImpl& expr);
-	lldb::SBValue EvaluateBeefCall(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
-	lldb::SBValue EvaluateBeefOperand(lldb::SBFrame& frame, const StringImpl& expr, String& outError);
-	void SplitBeefArgs(const StringImpl& argsText, Array<String>& outArgs);
-	bool FlattenBeefStruct(lldb::SBValue value, Array<String>& outTypes, Array<String>& outTexts);
-	bool GetBeefMethodDefaults(const char* mangledName, Array<String>& outDefaults);
-	lldb::SBValue CallBeefMethod(lldb::SBFrame& frame, lldb::SBValue thisValue, lldb::SBType staticType, const StringImpl& methodName,
-		const Array<lldb::SBValue>& args, bool allowCall, String& outError);
+	bool HostCheckBreakpointCondition(LLDBBreakpoint* bp);
+	String HostBreakpointLogText(const StringImpl& logging);
 	void CreateOutputPipes();
 	void GiveTerminalToTarget(const StringImpl& ttyPath, int pid);
 	void RestoreTerminal();
@@ -342,6 +306,9 @@ protected:
 	bool HotFindExeSymbol(const StringImpl& name, HotSymbol& outSymbol);
 	bool HotFindCanonicalSymbol(const StringImpl& name, HotSymbol& outSymbol);
 	bool HotResolveExternal(const StringImpl& name, uint64& outAddr, String& outError);
+	void HotDebugInfoAddrs(LLDBHotObject* obj, Array<addr_target>& outSectionAddrs, Array<uint64>& outSymbolAddrs);
+	void HostLoadHotObject(const StringImpl& path, int hotIdx, addr_target imageAddr, int64 imageSize, const Array<addr_target>& sectionAddrs, const Array<uint64>& symbolAddrs);
+	void HostFinishHotLoad();
 	bool HotResolveObjectSymbol(LLDBHotObject* obj, int symIdx, Array<HotPatch>& patches, uint64& outAddr, String& outError);
 	bool HotParseObject(LLDBHotObject* obj, String& outError);
 	bool HotPrepareObject(LLDBHotObject* obj, Array<HotPatch>& patches, String& outError);
@@ -379,6 +346,10 @@ protected:
 
 	void HostUnsupported(const char* name);
 	void HostSyncModules();
+	void HostBindLineAddresses(NS_BF_DBG::DbgSrcFile* srcFile, int lineNum, int instrOffset, int hotIdx, Array<addr_target>& outAddrs, int& outLineNum);
+	void HostBindBreakpointAddresses(LLDBBreakpoint* bp);
+	bool HostHotBindBreakpoint(LLDBBreakpoint* bp, int lineNum, int hotIdx);
+	void HostClearAddressBreakpoints(LLDBBreakpoint* bp);
 	void HostClearCallStack();
 	void HostBuildCallStack();
 	void HostReadFrameRegisters(lldb::SBFrame& frame, CPURegisters* registers);
@@ -404,10 +375,6 @@ public:
 	LLDBDebugger(DebugManager* debugManager);
 	~LLDBDebugger();
 
-	lldb::SBType GetBeefDynamicType(lldb::SBValue objectRef);
-	lldb::SBType GetBeefDynamicTypeAt(uint64 objAddr);
-	bool IsBeefObjectType(lldb::SBType type, int depth = 0);
-	lldb::SBValue EvaluateBeefAddrCast(const StringImpl& expr);
 
 	virtual void OutputMessage(const StringImpl& msg) override;
 	virtual void OutputRawMessage(const StringImpl& msg) override;
@@ -425,12 +392,6 @@ public:
 	void DoLaunch();
 	static void BFP_CALLTYPE LaunchThreadProc(void* param);
 	void WaitForLaunchThread();
-	static void BFP_CALLTYPE PendingEvalThreadProc(void* param);
-	String DoEvaluate(lldb::SBFrame& frame, const StringImpl& evalExpr, LLDBFormatInfo& fmtInfo, DwEvalExpressionFlags expressionFlags);
-	void CleanupPendingEval();
-	void InterruptPendingEval(const char* caller);
-	bool IsTargetBusy();
-	bool IsPausedState();
 	void HandleProcessEvent(lldb::StateType state);
 	virtual void Update() override;
 	virtual void ContinueDebugEvent() override;
@@ -459,13 +420,7 @@ public:
 	virtual void SetNextStatement(bool inAssembly, const StringImpl& fileName, int64 lineNumOrAsmAddr, int wantColumn) override;
 	virtual String Evaluate(const StringImpl& expr, int callStackIdx, int cursorPos, int language, DwEvalExpressionFlags expressionFlags) override;
 	virtual String EvaluateContinue() override;
-	virtual void EvaluateContinueKeep() override;
-	virtual String EvaluateToAddress(const StringImpl& expr, int callStackIdx, int cursorPos) override;
-	virtual String EvaluateAtAddress(const StringImpl& expr, intptr atAddr, int cursorPos) override;
-	virtual String GetCollectionContinuation(const StringImpl& continuationData, int callStackIdx, int count) override;
-	virtual String GetAutoExpressions(int callStackIdx, uint64 memoryRangeStart, uint64 memoryRangeLen) override;
 	virtual String GetAutoLocals(int callStackIdx, bool showRegs) override;
-	virtual String CompactChildExpression(const StringImpl& expr, const StringImpl& parentExpr, int callStackIdx) override;
 	virtual String GetProcessInfo() override;
 	virtual int GetProcessId() override;
 	virtual String GetThreadInfo() override;
@@ -519,13 +474,22 @@ public:
 	virtual int SetProtection(intptr address, int size, int prot) override;
 	virtual bool IsMiniDumpDebugger() override;
 	virtual int GetActiveThreadId() override;
+	virtual int GetEvalThreadId() override;
+	virtual void FinishPendingEval() override;
+	bool HostEnsureEvalTrap(String& outError);
+	void HostRunBeefCall();
+	String HostSendThreadPacket(const StringImpl& packet);
+	void HostHandleBeefCallStop();
+	void HostCancelBeefCall(const StringImpl& reason);
+	bool IsBeefCallRunning();
+	virtual bool IsMemoryBreakpointSizeValid(addr_target addr, int size) override;
+	virtual bool HasMemoryBreakpoint(addr_target addr, int size) override;
 	virtual String GetActiveThreadName() override;
 	virtual void ClearExplicitStopThread() override;
 	virtual int GetActiveBreakpointHitCount() override;
 	virtual String GetActiveBreakpointCondition() override;
 	virtual int GetTargetProcessId() override;
 	virtual bool PopulateRegisters(CPURegisters* registers) override;
-	virtual NS_BF_DBG::DbgTypedValue GetRegister(const StringImpl& regName, DbgLanguage language, CPURegisters* registers, Array<RegForm>* regForms = NULL) override;
 	virtual bool AssignToReg(int callStackIdx, NS_BF_DBG::DbgTypedValue reg, NS_BF_DBG::DbgTypedValue value, String& outError) override;
 	virtual bool SetRegisters(CPURegisters* registers) override;
 	virtual void SaveAllRegisters() override;
@@ -535,8 +499,10 @@ public:
 	virtual void SetThisRegister(CPURegisters* registers, addr_target val) override;
 	virtual void AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const NS_BF_DBG::DbgTypedValue& typedValue) override;
 	virtual bool CheckNeedsSRetArgument(NS_BF_DBG::DbgType* retType) override;
+	virtual int GetEvalStackReserve() override;
+	virtual addr_target GetEvalReturnAddress() override;
+	virtual bool SetupCallArgs(NS_BF_DBG::DbgSubprogram* method, SizedArrayImpl<NS_BF_DBG::DbgMethodArgument>& argPushQueue, const NS_BF_DBG::DbgTypedValue& structRetVal, NS_BF_DBG::CPURegisters* registers, NS_BF_DBG::DbgTypedValue& outThisVal, String& outError) override;
 	virtual NS_BF_DBG::DbgTypedValue ReadReturnValue(CPURegisters* registers, NS_BF_DBG::DbgType* type) override;
-	virtual bool ProcessEvalString(NS_BF_DBG::DbgCompileUnit* dbgCompileUnit, NS_BF_DBG::DbgTypedValue useTypedValue, String& evalStr, String& displayString, NS_BF_DBG::DwFormatInfo& formatInfo, DebugVisualizerEntry* debugVis, bool limitLength) override;
 	virtual bool WantsHotHeap() override;
 	virtual addr_target ReserveHotHeapMemory(addr_target address, int size) override;
 	virtual void ReleaseHotHeapMemory(addr_target address) override;

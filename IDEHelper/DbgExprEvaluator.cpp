@@ -5372,7 +5372,8 @@ void DbgExprEvaluator::LookupSplatMember(BfAstNode* targetNode, BfAstNode* looku
 
 	if (found)
 	{
-		bool wantConst = ((valWasConst) && (!memberType->IsConst()) && (!memberType->IsRef()));
+		// StoreValue writes CodeView's splat pieces because they are registers. DWARF's are in memory and would be read-only.
+		bool wantConst = ((valWasConst) && (!memberType->IsConst()) && (!memberType->IsRef()) && (GetFlavor() == DbgFlavor_MS));
 		if (!findName.StartsWith("$"))
 			findName = "$" + findName;
 		if (wasUnion)
@@ -6321,6 +6322,15 @@ void DbgExprEvaluator::PerformBinaryOperation(ASTREF(BfExpression*)& leftExpress
 	PerformBinaryOperation(resultType, convLeftValue, convRightValue, binaryOp, opToken);
 }
 
+// The CPU raises a divide error for the minimum value divided by -1, which would kill the IDE
+static bool IsSignedDivideOverflow(DbgType* type, const DbgTypedValue& left, const DbgTypedValue& right)
+{
+	if ((!type->IsSigned()) || (right.GetInt64() != -1))
+		return false;
+	int bitCount = type->GetByteCount() * 8;
+	return left.GetInt64() == (int64)(~(uint64)0 << (bitCount - 1));
+}
+
 void DbgExprEvaluator::PerformBinaryOperation(DbgType* resultType, DbgTypedValue convLeftValue, DbgTypedValue convRightValue, BfBinaryOp binaryOp, BfTokenNode* opToken)
 {
 	if (resultType->IsValuelessType())
@@ -6404,11 +6414,21 @@ void DbgExprEvaluator::PerformBinaryOperation(DbgType* resultType, DbgTypedValue
 			mResult.mInt64 = convLeftValue.GetInt64() ^ convRightValue.GetInt64();
 			return;
 		case BfBinaryOp_LeftShift:
-			mResult.mInt64 = convLeftValue.GetInt64() << convRightValue.GetInt64();
-			return;
 		case BfBinaryOp_RightShift:
-			mResult.mInt64 = convLeftValue.GetInt64() >> convRightValue.GetInt64();
-			return;
+			{
+				// Shifting by the bit width or more is undefined, and the CPU would mask the count
+				int64 shiftCount = convRightValue.GetInt64();
+				if ((shiftCount < 0) || (shiftCount >= resultType->GetByteCount() * 8))
+				{
+					Fail("Shift count out of range", opToken);
+					return;
+				}
+				if (binaryOp == BfBinaryOp_LeftShift)
+					mResult.mInt64 = convLeftValue.GetInt64() << shiftCount;
+				else
+					mResult.mInt64 = convLeftValue.GetInt64() >> shiftCount;
+				return;
+			}
 		}
 	}
 
@@ -6444,6 +6464,7 @@ void DbgExprEvaluator::PerformBinaryOperation(DbgType* resultType, DbgTypedValue
 	case BfBinaryOp_Divide:
 		{
 			bool isZero = false;
+			bool isOverflow = false;
 			if (resultType->mTypeCode == DbgType_Single)
 			{
 				mResult.mSingle = convLeftValue.mSingle / convRightValue.mSingle;
@@ -6456,16 +6477,21 @@ void DbgExprEvaluator::PerformBinaryOperation(DbgType* resultType, DbgTypedValue
 			{
 				if (convRightValue.GetInt64() == 0)
 					isZero = true;
+				else if (IsSignedDivideOverflow(resultType, convLeftValue, convRightValue))
+					isOverflow = true;
 				else
 					mResult.mInt64 = convLeftValue.GetInt64() / convRightValue.GetInt64();
 			}
 			if (isZero)
 				Fail("Divide by zero", opToken);
+			else if (isOverflow)
+				Fail("Integer overflow", opToken);
 		}
 		break;
 	case BfBinaryOp_Modulus:
 		{
 			bool isZero = false;
+			bool isOverflow = false;
 			if (resultType->mTypeCode == DbgType_Single)
 				mResult.mSingle = fmod(convLeftValue.mSingle, convRightValue.mSingle);
 			else if (resultType->mTypeCode == DbgType_Double)
@@ -6474,11 +6500,15 @@ void DbgExprEvaluator::PerformBinaryOperation(DbgType* resultType, DbgTypedValue
 			{
 				if (convRightValue.GetInt64() == 0)
 					isZero = true;
+				else if (IsSignedDivideOverflow(resultType, convLeftValue, convRightValue))
+					isOverflow = true;
 				else
 					mResult.mInt64 = convLeftValue.GetInt64() % convRightValue.GetInt64();
 			}
 			if (isZero)
 				Fail("Divide by zero", opToken);
+			else if (isOverflow)
+				Fail("Integer overflow", opToken);
 		}
 		break;
 	case BfBinaryOp_Equality:
@@ -7017,7 +7047,7 @@ DbgTypedValue DbgExprEvaluator::CreateCall(DbgSubprogram* method, DbgTypedValue 
 	//registers->mIntRegs.efl = 0x244;
 
 	//mDebugger->PushValue(registers, 0);
-	mDebugger->PushValue(registers, 42);
+	mDebugger->PushValue(registers, mDebugger->GetEvalReturnAddress());
 
 	*(registers->GetPCRegisterRef()) = startAddr;
 
@@ -7409,6 +7439,8 @@ DbgTypedValue DbgExprEvaluator::CreateCall(DbgSubprogram* method, SizedArrayImpl
 	bool canSetRegisters = mDebugger->PopulateRegisters(&registers);
 
 	auto* regSP = registers.GetSPRegisterRef();
+	// A SysV leaf function keeps locals in the red zone below the stack pointer
+	*regSP -= mDebugger->GetEvalStackReserve();
 	if (mCallStackPreservePos != 0)
 	{
 		if (mCallStackPreservePos <= *regSP)
@@ -7466,15 +7498,23 @@ DbgTypedValue DbgExprEvaluator::CreateCall(DbgSubprogram* method, SizedArrayImpl
 		}
 	}
 
-	if (structRetVal.mSrcAddress != 0)
+	DbgTypedValue thisVal;
+	String setupError;
+	bool setupHandled = mDebugger->SetupCallArgs(method, argPushQueue, structRetVal, &registers, thisVal, setupError);
+	if (!setupError.IsEmpty())
+	{
+		Fail(setupError, NULL);
+		return DbgTypedValue();
+	}
+
+	if ((!setupHandled) && (structRetVal.mSrcAddress != 0))
 	{
 		BfLogDbgExpr(" SRet:0x%p", structRetVal.mSrcAddress);
 		mDebugger->AddParamValue(0, method->mHasThis && !thisByValue, &registers, structRetVal);
 		paramIdx++;
 	}
 
-	DbgTypedValue thisVal;
-	for (int padCount = 0; true; padCount++)
+	for (int padCount = 0; !setupHandled; padCount++)
 	{
 		auto regSave = registers;
 		int paramIdxSave = paramIdx;
