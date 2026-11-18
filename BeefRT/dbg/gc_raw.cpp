@@ -683,6 +683,7 @@ void BfRawFree(void* ptr)
 #else // BF_GC_SUPPORTED
 
 #include "BeefySysLib/util/HashSet.h"
+#include "../rt/Thread.h"
 
 USING_NS_BF;
 
@@ -694,6 +695,7 @@ struct BfRawAllocInfo
 	bf::System::DbgRawAllocData* mRawAllocData;
 	intptr mSize;
 	int32 mStackTraceCount;
+	int32 mMarkEpoch;
 	int64 mAllocIdx;
 };
 
@@ -702,6 +704,10 @@ struct BfRawAllocInfo
 static Dictionary<void*, BfRawAllocInfo>* gRawAllocs = new Dictionary<void*, BfRawAllocInfo>();
 static CritSect* gRawAllocCritSect = new CritSect();
 static int64 gRawAllocIdx = 0;
+
+#ifdef BF_PLATFORM_LINUX
+static void BfGCRegisterCurrentThread();
+#endif
 
 void* BfRawAllocate(intptr size, bf::System::DbgRawAllocData* rawAllocData, void* stackTraceInfo, int stackTraceCount)
 {
@@ -712,9 +718,16 @@ void* BfRawAllocate(intptr size, bf::System::DbgRawAllocData* rawAllocData, void
 	void* result = malloc(size + stackTraceCount * sizeof(intptr));
 	if (stackTraceCount > 0)
 		memcpy((uint8*)result + size, stackTraceInfo, stackTraceCount * sizeof(intptr));
+	// Code compiled with the leak check expects zeroed objects, as the collector's heap provides on Windows.
+	// Zeroed before the block is registered, so a collection never reads stale flags.
+	if (rawAllocData == &sObjectAllocData)
+		memset(result, 0, size);
 
+#ifdef BF_PLATFORM_LINUX
+	BfGCRegisterCurrentThread();
+#endif
 	AutoCrit autoCrit(*gRawAllocCritSect);
-	BfRawAllocInfo allocInfo = { rawAllocData, size, stackTraceCount, gRawAllocIdx++ };
+	BfRawAllocInfo allocInfo = { rawAllocData, size, stackTraceCount, 0, gRawAllocIdx++ };
 	gRawAllocs->ForceAdd(result, allocInfo);
 	return result;
 }
@@ -762,34 +775,8 @@ static void AppendStackTrace(String& str, intptr* trace, int count)
 		str += StrFormat("      0x%llx\n", (unsigned long long)trace[traceIdx]);
 }
 
-void BfRawShutdown()
+static void ReportLeaks(Array<BfRawLeak>& objectLeaks, Array<BfRawLeak>& rawLeaks, Dictionary<void*, BfRawAllocInfo>& liveAllocs, bool fromCollector)
 {
-	if ((BFRTFLAGS & BfRtFlags_LeakCheck) == 0)
-		return;
-
-	Dictionary<void*, BfRawAllocInfo> liveAllocs;
-	{
-		AutoCrit autoCrit(*gRawAllocCritSect);
-		for (auto& kv : *gRawAllocs)
-			liveAllocs[kv.mKey] = kv.mValue;
-	}
-
-	Array<BfRawLeak> objectLeaks;
-	Array<BfRawLeak> rawLeaks;
-	for (auto& kv : liveAllocs)
-	{
-		BfRawLeak leak = { kv.mKey, kv.mValue };
-		if (kv.mValue.mRawAllocData == &sObjectAllocData)
-		{
-			if ((((bf::System::Object*)kv.mKey)->mObjectFlags & BfObjectFlag_Deleted) == 0)
-				objectLeaks.Add(leak);
-		}
-		else
-			rawLeaks.Add(leak);
-	}
-	if ((objectLeaks.IsEmpty()) && (rawLeaks.IsEmpty()))
-		return;
-
 	auto compareLeaks = [](const BfRawLeak& lhs, const BfRawLeak& rhs) { return lhs.mAllocInfo.mAllocIdx < rhs.mAllocInfo.mAllocIdx; };
 	objectLeaks.Sort(compareLeaks);
 	rawLeaks.Sort(compareLeaks);
@@ -942,8 +929,521 @@ void BfRawShutdown()
 		report += "Allocation stack traces: resolve with addr2line -f -C -e <binary> <address>\n";
 		fputs(report.c_str(), stderr);
 		fflush(stderr);
+		if (fromCollector)
+		{
+			// Other threads keep running, so exit without running exit handlers under them
+			fflush(stdout);
+			_exit(1);
+		}
 		exit(1);
 	}
 }
+
+static void SnapshotAllocs(Dictionary<void*, BfRawAllocInfo>& liveAllocs)
+{
+	AutoCrit autoCrit(*gRawAllocCritSect);
+	for (auto& kv : *gRawAllocs)
+		liveAllocs[kv.mKey] = kv.mValue;
+}
+
+void BfRawShutdown()
+{
+	if ((BFRTFLAGS & BfRtFlags_LeakCheck) == 0)
+		return;
+
+	Dictionary<void*, BfRawAllocInfo> liveAllocs;
+	SnapshotAllocs(liveAllocs);
+
+	Array<BfRawLeak> objectLeaks;
+	Array<BfRawLeak> rawLeaks;
+	for (auto& kv : liveAllocs)
+	{
+		BfRawLeak leak = { kv.mKey, kv.mValue };
+		if (kv.mValue.mRawAllocData == &sObjectAllocData)
+		{
+			if ((((bf::System::Object*)kv.mKey)->mObjectFlags & BfObjectFlag_Deleted) == 0)
+				objectLeaks.Add(leak);
+		}
+		else
+			rawLeaks.Add(leak);
+	}
+	if ((objectLeaks.IsEmpty()) && (rawLeaks.IsEmpty()))
+		return;
+	ReportLeaks(objectLeaks, rawLeaks, liveAllocs, false);
+}
+
+#ifdef BF_PLATFORM_LINUX
+
+struct BfGCTLSMember
+{
+	intptr mOffset;
+	void* mMarkFunc;
+};
+
+struct BfGCThread
+{
+	BfpThread* mThread;
+	intptr mStackStart;
+	uint8* mTLSAnchor;
+	CritSect mCritSect;
+	Array<bf::System::Object*> mStackMarkableObjects;
+	bool mSuspended;
+};
+
+// Thread statics sit at fixed offsets from this in every thread's static TLS block
+static __thread uint8 gTLSAnchor;
+static __thread BfGCThread* gCurGCThread;
+static __thread bool gIsCollectorThread;
+
+static CritSect* gGCThreadsCritSect = new CritSect();
+static Array<BfGCThread*>* gGCThreads = new Array<BfGCThread*>();
+static Array<BfGCTLSMember>* gGCTLSMembers = new Array<BfGCTLSMember>();
+static Array<bf::System::Object*>* gGCPendingThreads = new Array<bf::System::Object*>();
+static Array<void*>* gGCMarkStack = new Array<void*>();
+static SyncEvent* gGCCollectEvent = new SyncEvent();
+static SyncEvent* gGCCollectDoneEvent = new SyncEvent(true);
+static BfpTLS* gGCThreadExitTLS = NULL;
+static BfpThread* gGCThread = NULL;
+static volatile bool gGCExiting = false;
+static volatile bool gGCCollectRequested = false;
+static volatile intptr gGCAutoCollectPeriod = 2000;
+static volatile intptr gGCFreeTrigger = 64 * 1024 * 1024;
+static intptr gGCDeletedSinceCollect = 0;
+static int32 gGCMarkEpoch = 0;
+static bool gGCMarkingDeleted = false;
+
+static void BfGCThreadExit(void* threadData)
+{
+	BfGCThread* gcThread = (BfGCThread*)threadData;
+	AutoCrit autoCrit(*gGCThreadsCritSect);
+	gGCThreads->Remove(gcThread);
+	gCurGCThread = NULL;
+	delete gcThread;
+}
+
+static void BfGCRegisterCurrentThread()
+{
+	if ((gCurGCThread != NULL) || (gGCThreadExitTLS == NULL) || (gIsCollectorThread))
+		return;
+
+	BfGCThread* gcThread = new BfGCThread();
+	gcThread->mThread = BfpThread_GetCurrent();
+	intptr stackBase = 0;
+	int stackLimit = 0;
+	BfpThreadInfo_GetStackInfo(NULL, &stackBase, &stackLimit, BfpThreadInfoFlags_None, NULL);
+	gcThread->mStackStart = stackBase;
+	gcThread->mTLSAnchor = &gTLSAnchor;
+	gcThread->mSuspended = false;
+	gCurGCThread = gcThread;
+	BfpTLS_SetValue(gGCThreadExitTLS, gcThread);
+
+	AutoCrit autoCrit(*gGCThreadsCritSect);
+	gGCThreads->Add(gcThread);
+}
+
+static void BfGCMarkPtr(void* ptr)
+{
+	BfRawAllocInfo* allocInfo = NULL;
+	if (!gRawAllocs->TryGetValue(ptr, &allocInfo))
+		return;
+	if ((allocInfo->mRawAllocData != &sObjectAllocData) || (allocInfo->mMarkEpoch == gGCMarkEpoch))
+		return;
+	bf::System::Object* obj = (bf::System::Object*)ptr;
+	if ((obj->mObjectFlags & BfObjectFlag_Allocated) == 0)
+		return;
+	// A deleted object must not keep a live one from being reported
+	if ((gGCMarkingDeleted) && ((obj->mObjectFlags & BfObjectFlag_Deleted) == 0))
+		return;
+	allocInfo->mMarkEpoch = gGCMarkEpoch;
+	gGCMarkStack->Add(ptr);
+}
+
+static void BfGCMarkMembers(bf::System::Object* obj)
+{
+	if ((obj->mObjectFlags & BfObjectFlag_Deleted) != 0)
+	{
+		bool prevMarkingDeleted = gGCMarkingDeleted;
+		gGCMarkingDeleted = true;
+		BFRTCALLBACKS.Object_GCMarkMembers(obj);
+		gGCMarkingDeleted = prevMarkingDeleted;
+	}
+	else
+		BFRTCALLBACKS.Object_GCMarkMembers(obj);
+}
+
+static void BfGCDrainMarkStack()
+{
+	while (!gGCMarkStack->IsEmpty())
+	{
+		void* ptr = gGCMarkStack->back();
+		gGCMarkStack->pop_back();
+		BfGCMarkMembers((bf::System::Object*)ptr);
+	}
+}
+
+static void BfGCScanRange(void* startAddr, intptr length)
+{
+	void** ptr = (void**)((intptr)startAddr & ~(intptr)(sizeof(intptr) - 1));
+	void** endPtr = (void**)((uint8*)startAddr + length);
+	for (; ptr < endPtr; ptr++)
+		BfGCMarkPtr(*ptr);
+}
+
+static void BfGCMarkRawRoots()
+{
+	typedef void(*MarkFunc)(void*);
+	intptr objectSize = ((BFRTFLAGS & BfRtFlags_ObjectHasDebugFlags) != 0) ? sizeof(intptr) * 2 : sizeof(intptr);
+	for (auto& kv : *gRawAllocs)
+	{
+		auto rawAllocData = kv.mValue.mRawAllocData;
+		if ((rawAllocData == &sObjectAllocData) || (rawAllocData->mMarkFunc == NULL) || (rawAllocData->mType == NULL))
+			continue;
+		// A Type is an object: its type data follows the object header
+		auto typeData = (bf::System::Type_NOFLAGS*)((uint8*)rawAllocData->mType + objectSize);
+		intptr elemStride = BF_ALIGN(typeData->mSize, BF_MAX((int)typeData->mAlign, 1));
+		if (elemStride <= 0)
+			continue;
+		MarkFunc markFunc = (MarkFunc)rawAllocData->mMarkFunc;
+		intptr elemCount = kv.mValue.mSize / elemStride;
+		for (intptr elemIdx = 0; elemIdx < elemCount; elemIdx++)
+			markFunc((uint8*)kv.mKey + elemIdx * elemStride);
+	}
+}
+
+// Runs on the collector thread. Returns false when a thread could not be stopped, so nothing is known about this cycle.
+static bool BfGCMark()
+{
+	gGCMarkEpoch++;
+	if (gGCMarkEpoch <= 0)
+		gGCMarkEpoch = 1;
+
+	for (auto gcThread : *gGCThreads)
+		gcThread->mCritSect.Lock();
+
+	bool succeeded = true;
+	for (auto gcThread : *gGCThreads)
+	{
+		BfpThreadResult result = BfpThreadResult_UnknownError;
+		BfpThread_Suspend(gcThread->mThread, &result);
+		gcThread->mSuspended = result == BfpThreadResult_Ok;
+		if (!gcThread->mSuspended)
+			succeeded = false;
+	}
+
+	if (succeeded)
+	{
+		BFRTCALLBACKS.GC_MarkAllStaticMembers();
+		BfGCDrainMarkStack();
+
+		for (auto threadObj : *gGCPendingThreads)
+			BfGCMarkPtr(threadObj);
+		BfGCDrainMarkStack();
+
+		for (auto gcThread : *gGCThreads)
+		{
+			for (auto obj : gcThread->mStackMarkableObjects)
+				BfGCMarkMembers(obj);
+
+			for (auto& tlsMember : *gGCTLSMembers)
+			{
+				typedef void(*MarkFunc)(void*);
+				((MarkFunc)tlsMember.mMarkFunc)(gcThread->mTLSAnchor + tlsMember.mOffset);
+			}
+
+			intptr regVals[128];
+			int regValCount = 128;
+			intptr stackPtr = 0;
+			BfpThreadResult result = BfpThreadResult_UnknownError;
+			BfpThread_GetIntRegisters(gcThread->mThread, &stackPtr, regVals, &regValCount, &result);
+			if (result != BfpThreadResult_Ok)
+			{
+				succeeded = false;
+				break;
+			}
+			BfGCScanRange(regVals, regValCount * sizeof(intptr));
+			if ((stackPtr != 0) && (gcThread->mStackStart > stackPtr))
+				BfGCScanRange((void*)stackPtr, gcThread->mStackStart - stackPtr);
+			BfGCDrainMarkStack();
+		}
+
+		BfGCMarkRawRoots();
+		BfGCDrainMarkStack();
+
+		// Allocated but not set up yet: the sweep runs after the resume, when its flags may already say allocated
+		for (auto& kv : *gRawAllocs)
+		{
+			if ((kv.mValue.mRawAllocData == &sObjectAllocData) && ((((bf::System::Object*)kv.mKey)->mObjectFlags & BfObjectFlag_Allocated) == 0))
+				kv.mValue.mMarkEpoch = gGCMarkEpoch;
+		}
+	}
+
+	for (auto gcThread : *gGCThreads)
+	{
+		if (gcThread->mSuspended)
+			BfpThread_Resume(gcThread->mThread, NULL);
+		gcThread->mSuspended = false;
+	}
+	for (auto gcThread : *gGCThreads)
+		gcThread->mCritSect.Unlock();
+	return succeeded;
+}
+
+static void BfGCCollectNow()
+{
+	if (!BFRTCALLBACKS.GC_CallRootCallbacks())
+		return;
+
+	Array<BfRawLeak> objectLeaks;
+	Array<void*> deletedFrees;
+	{
+		AutoCrit allocCrit(*gRawAllocCritSect);
+		// Reserved up front: no malloc while threads are stopped, one of them may hold the allocator's lock
+		gGCMarkStack->Reserve(gRawAllocs->GetCount() + 64);
+		objectLeaks.Reserve(16);
+		deletedFrees.Reserve(16);
+		gGCDeletedSinceCollect = 0;
+
+		bool marked;
+		{
+			AutoCrit threadsCrit(*gGCThreadsCritSect);
+			marked = BfGCMark();
+		}
+		if (!marked)
+			return;
+
+		for (auto& kv : *gRawAllocs)
+		{
+			if ((kv.mValue.mRawAllocData != &sObjectAllocData) || (kv.mValue.mMarkEpoch == gGCMarkEpoch))
+				continue;
+			bf::System::Object* obj = (bf::System::Object*)kv.mKey;
+			if ((obj->mObjectFlags & BfObjectFlag_Deleted) != 0)
+				deletedFrees.Add(kv.mKey);
+			else if ((obj->mObjectFlags & BfObjectFlag_Allocated) != 0)
+			{
+				// Counts as live for this cycle, so a continued program can run on, as BFGC::ProcessSweepInfo allows
+				kv.mValue.mMarkEpoch = gGCMarkEpoch;
+				BfRawLeak leak = { kv.mKey, kv.mValue };
+				objectLeaks.Add(leak);
+			}
+		}
+		for (auto ptr : deletedFrees)
+		{
+			gRawAllocs->Remove(ptr);
+			free(ptr);
+		}
+	}
+
+	if (!objectLeaks.IsEmpty())
+	{
+		Array<BfRawLeak> rawLeaks;
+		Dictionary<void*, BfRawAllocInfo> liveAllocs;
+		SnapshotAllocs(liveAllocs);
+		ReportLeaks(objectLeaks, rawLeaks, liveAllocs, true);
+	}
+}
+
+static void BF_CALLTYPE BfGCRun(void* param)
+{
+	gIsCollectorThread = true;
+	BfpThread_SetName(BfpThread_GetCurrent(), "BFGC", NULL);
+	while (!gGCExiting)
+	{
+		intptr period = gGCAutoCollectPeriod;
+		gGCCollectEvent->WaitFor((period < 0) ? -1 : (int)BF_MIN(period, 100));
+		if (gGCExiting)
+			break;
+
+		static uint32 lastCollectTick = BFTickCount();
+		uint32 tickNow = BFTickCount();
+		period = gGCAutoCollectPeriod;
+		if ((period >= 0) && ((intptr)(tickNow - lastCollectTick) >= period))
+			gGCCollectRequested = true;
+		if (!gGCCollectRequested)
+			continue;
+		gGCCollectRequested = false;
+		lastCollectTick = tickNow;
+
+		BfGCCollectNow();
+		gGCCollectDoneEvent->Set(true);
+	}
+}
+
+void BfGCInit()
+{
+#if !defined(__x86_64__)
+	// Stopping threads is only verified on x86_64; elsewhere leaks are reported at shutdown
+	return;
+#endif
+	if (((BFRTFLAGS & BfRtFlags_LeakCheck) == 0) || (gGCThreadExitTLS != NULL))
+		return;
+	gGCThreadExitTLS = BfpTLS_Create(BfGCThreadExit);
+	BfGCRegisterCurrentThread();
+	gGCThread = BfpThread_Create(BfGCRun, NULL, 256 * 1024, BfpThreadCreateFlag_StackSizeReserve, NULL);
+}
+
+void BfGCStopCollecting()
+{
+	if (gGCThread == NULL)
+		return;
+	gGCExiting = true;
+	gGCCollectEvent->Set();
+	BfpThread_WaitFor(gGCThread, -1);
+	BfpThread_Release(gGCThread);
+	gGCThread = NULL;
+}
+
+void BfGCCollect(bool async)
+{
+	if (gGCThread == NULL)
+		return;
+	gGCCollectDoneEvent->Reset();
+	gGCCollectRequested = true;
+	gGCCollectEvent->Set();
+	if (!async)
+		gGCCollectDoneEvent->WaitFor();
+}
+
+void BfGCSetAutoCollectPeriod(intptr periodMS)
+{
+	gGCAutoCollectPeriod = periodMS;
+}
+
+void BfGCSetCollectFreeThreshold(intptr freeBytes)
+{
+	gGCFreeTrigger = freeBytes;
+}
+
+void BfGCReportTLSMember(void* ptr, void* markFunc)
+{
+	BfGCTLSMember tlsMember = { (intptr)((uint8*)ptr - &gTLSAnchor), markFunc };
+	AutoCrit autoCrit(*gGCThreadsCritSect);
+	gGCTLSMembers->Add(tlsMember);
+}
+
+void BfGCAddStackMarkableObject(bf::System::Object* obj)
+{
+	BfGCRegisterCurrentThread();
+	if (gCurGCThread == NULL)
+		return;
+	AutoCrit autoCrit(gCurGCThread->mCritSect);
+	gCurGCThread->mStackMarkableObjects.Add(obj);
+}
+
+void BfGCRemoveStackMarkableObject(bf::System::Object* obj)
+{
+	if (gCurGCThread == NULL)
+		return;
+	AutoCrit autoCrit(gCurGCThread->mCritSect);
+	int stackIdx = (int)gCurGCThread->mStackMarkableObjects.LastIndexOf(obj);
+	if (stackIdx != -1)
+		gCurGCThread->mStackMarkableObjects.RemoveAtFast(stackIdx);
+}
+
+void BfGCAddPendingThread(void* internalThread)
+{
+	bf::System::Object* threadObj = (bf::System::Object*)((BfInternalThread*)internalThread)->mThread;
+	if ((threadObj == NULL) || (gGCThreadExitTLS == NULL))
+		return;
+	AutoCrit autoCrit(*gGCThreadsCritSect);
+	if (!gGCPendingThreads->Contains(threadObj))
+		gGCPendingThreads->Add(threadObj);
+}
+
+// What DLL_THREAD_ATTACH gives the Windows collector: threads outside the Beef Thread start path register here
+extern "C" void BfGCAttachThread()
+{
+	BfGCRegisterCurrentThread();
+}
+
+void BfGCThreadStarted(BfInternalThread* internalThread)
+{
+	if (gGCThreadExitTLS == NULL)
+		return;
+	BfGCRegisterCurrentThread();
+	AutoCrit autoCrit(*gGCThreadsCritSect);
+	gGCPendingThreads->Remove((bf::System::Object*)internalThread->mThread);
+}
+
+void BfGCMarkObject(bf::System::Object* obj)
+{
+	if (obj != NULL)
+		BfGCMarkPtr(obj);
+}
+
+void BfGCMarkRange(void* ptr, intptr size)
+{
+	BfGCScanRange(ptr, size);
+}
+
+void BfGCObjectDeleted(bf::System::Object* obj)
+{
+	bool wantsCollect = false;
+	{
+		AutoCrit autoCrit(*gRawAllocCritSect);
+		BfRawAllocInfo* allocInfo = NULL;
+		if (!gRawAllocs->TryGetValue(obj, &allocInfo))
+		{
+			// Allocated before the leak check started, so the collector won't free it
+			free(obj);
+			return;
+		}
+		gGCDeletedSinceCollect += allocInfo->mSize;
+		wantsCollect = (gGCFreeTrigger >= 0) && (gGCDeletedSinceCollect >= gGCFreeTrigger);
+	}
+	if (wantsCollect)
+		BfGCCollect(true);
+}
+
+#else
+
+void BfGCInit()
+{
+}
+
+void BfGCStopCollecting()
+{
+}
+
+void BfGCCollect(bool async)
+{
+}
+
+void BfGCSetAutoCollectPeriod(intptr periodMS)
+{
+}
+
+void BfGCSetCollectFreeThreshold(intptr freeBytes)
+{
+}
+
+void BfGCReportTLSMember(void* ptr, void* markFunc)
+{
+}
+
+void BfGCAddStackMarkableObject(bf::System::Object* obj)
+{
+}
+
+void BfGCRemoveStackMarkableObject(bf::System::Object* obj)
+{
+}
+
+void BfGCAddPendingThread(void* internalThread)
+{
+}
+
+void BfGCMarkObject(bf::System::Object* obj)
+{
+}
+
+void BfGCMarkRange(void* ptr, intptr size)
+{
+}
+
+void BfGCObjectDeleted(bf::System::Object* obj)
+{
+}
+
+#endif
 
 #endif
