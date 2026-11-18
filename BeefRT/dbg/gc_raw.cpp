@@ -682,14 +682,268 @@ void BfRawFree(void* ptr)
 
 #else // BF_GC_SUPPORTED
 
+#include "BeefySysLib/util/HashSet.h"
+
+USING_NS_BF;
+
+bool IsDebuggerPresent();
+extern Beefy::StringT<0> gDbgErrorString;
+
+struct BfRawAllocInfo
+{
+	bf::System::DbgRawAllocData* mRawAllocData;
+	intptr mSize;
+	int32 mStackTraceCount;
+	int64 mAllocIdx;
+};
+
+// Without a collector, a leak check tracks every live block so it can report the ones left at shutdown.
+// Never freed: blocks can still be freed while static destructors run at exit.
+static Dictionary<void*, BfRawAllocInfo>* gRawAllocs = new Dictionary<void*, BfRawAllocInfo>();
+static CritSect* gRawAllocCritSect = new CritSect();
+static int64 gRawAllocIdx = 0;
+
 void* BfRawAllocate(intptr size, bf::System::DbgRawAllocData* rawAllocData, void* stackTraceInfo, int stackTraceCount)
 {
-	return malloc(size);
+	if ((BFRTFLAGS & BfRtFlags_LeakCheck) == 0)
+		return malloc(size);
+
+	// The stack trace follows the data, where a debugger can read it
+	void* result = malloc(size + stackTraceCount * sizeof(intptr));
+	if (stackTraceCount > 0)
+		memcpy((uint8*)result + size, stackTraceInfo, stackTraceCount * sizeof(intptr));
+
+	AutoCrit autoCrit(*gRawAllocCritSect);
+	BfRawAllocInfo allocInfo = { rawAllocData, size, stackTraceCount, gRawAllocIdx++ };
+	gRawAllocs->ForceAdd(result, allocInfo);
+	return result;
 }
 
 void BfRawFree(void* ptr)
 {
+	if ((BFRTFLAGS & BfRtFlags_LeakCheck) != 0)
+	{
+		AutoCrit autoCrit(*gRawAllocCritSect);
+		gRawAllocs->Remove(ptr);
+	}
 	free(ptr);
+}
+
+struct BfRawLeak
+{
+	void* mPtr;
+	BfRawAllocInfo mAllocInfo;
+};
+
+static int GetObjectAllocStackTrace(bf::System::Object* obj, intptr*& outTrace)
+{
+#ifdef BFRT_NODBGFLAGS
+	return 0;
+#else
+	if ((obj->mObjectFlags & BfObjectFlag_AllocInfo) != 0)
+	{
+		intptr size = obj->mDbgAllocInfo;
+		outTrace = (intptr*)((uint8*)obj + size + sizeof(intptr));
+		return (int)((*(intptr*)((uint8*)obj + size) >> 8) & 0xFFFF);
+	}
+	if ((obj->mObjectFlags & BfObjectFlag_AllocInfo_Short) != 0)
+	{
+		outTrace = (intptr*)((uint8*)obj + (obj->mDbgAllocInfo >> 16));
+		return (int)(obj->mDbgAllocInfo & 0xFF);
+	}
+	outTrace = &obj->mDbgAllocInfo;
+	return (obj->mDbgAllocInfo > 1) ? 1 : 0;
+#endif
+}
+
+static void AppendStackTrace(String& str, intptr* trace, int count)
+{
+	for (int traceIdx = 0; traceIdx < count; traceIdx++)
+		str += StrFormat("      0x%llx\n", (unsigned long long)trace[traceIdx]);
+}
+
+void BfRawShutdown()
+{
+	if ((BFRTFLAGS & BfRtFlags_LeakCheck) == 0)
+		return;
+
+	Dictionary<void*, BfRawAllocInfo> liveAllocs;
+	{
+		AutoCrit autoCrit(*gRawAllocCritSect);
+		for (auto& kv : *gRawAllocs)
+			liveAllocs[kv.mKey] = kv.mValue;
+	}
+
+	Array<BfRawLeak> objectLeaks;
+	Array<BfRawLeak> rawLeaks;
+	for (auto& kv : liveAllocs)
+	{
+		BfRawLeak leak = { kv.mKey, kv.mValue };
+		if (kv.mValue.mRawAllocData == &sObjectAllocData)
+		{
+			if ((((bf::System::Object*)kv.mKey)->mObjectFlags & BfObjectFlag_Deleted) == 0)
+				objectLeaks.Add(leak);
+		}
+		else
+			rawLeaks.Add(leak);
+	}
+	if ((objectLeaks.IsEmpty()) && (rawLeaks.IsEmpty()))
+		return;
+
+	auto compareLeaks = [](const BfRawLeak& lhs, const BfRawLeak& rhs) { return lhs.mAllocInfo.mAllocIdx < rhs.mAllocInfo.mAllocIdx; };
+	objectLeaks.Sort(compareLeaks);
+	rawLeaks.Sort(compareLeaks);
+
+	// Stands in for the collector's marking: pointers found in blocks reachable from a leaked object
+	HashSet<void*> referenced;
+	Array<void*> pending;
+	for (auto& leak : objectLeaks)
+		pending.Add(leak.mPtr);
+	while (!pending.IsEmpty())
+	{
+		void* ptr = pending.back();
+		pending.pop_back();
+		BfRawAllocInfo* allocInfo = NULL;
+		liveAllocs.TryGetValue(ptr, &allocInfo);
+		for (intptr offset = 0; offset + (intptr)sizeof(void*) <= allocInfo->mSize; offset += sizeof(void*))
+		{
+			void* checkPtr = *(void**)((uint8*)ptr + offset);
+			if ((liveAllocs.ContainsKey(checkPtr)) && (referenced.Add(checkPtr)))
+				pending.Add(checkPtr);
+		}
+	}
+
+	bool debuggerPresent = IsDebuggerPresent();
+	String report;
+
+	if (!objectLeaks.IsEmpty())
+	{
+		String errorStr = StrFormat("%d object memory leak%s detected.\nMouse over an 'i' icon in the Output panel to view a leaked object and its allocation stack trace.",
+			objectLeaks.mSize, (objectLeaks.mSize != 1) ? "s" : "");
+		gDbgErrorString = errorStr;
+		gDbgErrorString += "\n";
+		report += StrFormat("%d object memory leak%s detected.\n", objectLeaks.mSize, (objectLeaks.mSize != 1) ? "s" : "");
+
+		for (int pass = 0; pass < 2; pass++)
+		{
+			int passLeakCount = 0;
+			for (auto& leak : objectLeaks)
+			{
+				if (referenced.Contains(leak.mPtr) != (pass == 1))
+					continue;
+
+				bf::System::Object* obj = (bf::System::Object*)leak.mPtr;
+				String typeName = obj->GetTypeName();
+
+				if (passLeakCount == 0)
+				{
+					String header = (pass == 0) ? " Unreferenced:\n" : " Referenced by other leaked objects:\n";
+					errorStr += "\x1";
+					errorStr += "TEXT\t";
+					errorStr += header;
+					gDbgErrorString += header;
+					report += header;
+				}
+
+				if (passLeakCount < 20000)
+				{
+					errorStr += "\x1";
+					errorStr += StrFormat("LEAK\t(System.Object)0x%@\n", obj);
+					errorStr += StrFormat("   (%s)0x%@\n", typeName.c_str(), obj);
+				}
+				if (gDbgErrorString.length() < 256)
+					gDbgErrorString += StrFormat("   (%s)0x%@\n", typeName.c_str(), obj);
+
+				report += StrFormat("   (%s)0x%llx\n", typeName.c_str(), (unsigned long long)obj);
+				intptr* trace = NULL;
+				int traceCount = GetObjectAllocStackTrace(obj, trace);
+				AppendStackTrace(report, trace, traceCount);
+				passLeakCount++;
+			}
+		}
+
+		if (debuggerPresent)
+		{
+			BFRTCALLBACKS.SetErrorString(gDbgErrorString.c_str());
+			BFRTCALLBACKS.DebugMessageData_SetupError(errorStr.c_str(), 1);
+			BF_DEBUG_BREAK();
+		}
+	}
+
+	if (!rawLeaks.IsEmpty())
+	{
+		String errorStr = StrFormat("%d raw memory leak%s detected.\nMouse over an 'i' icon in the Output panel to view the leaked memory or the associated allocation stack trace.",
+			rawLeaks.mSize, (rawLeaks.mSize != 1) ? "s" : "");
+		gDbgErrorString = errorStr;
+		gDbgErrorString += "\n";
+		report += StrFormat("%d raw memory leak%s detected.\n", rawLeaks.mSize, (rawLeaks.mSize != 1) ? "s" : "");
+
+		int passLeakCount = 0;
+		for (auto& leak : rawLeaks)
+		{
+			auto rawAllocData = leak.mAllocInfo.mRawAllocData;
+			String typeName;
+			intptr dataCount = 1;
+			if (rawAllocData->mType != NULL)
+			{
+				typeName = rawAllocData->mType->GetFullName() + "*";
+				// A Type is an object: its mSize follows the object header
+				intptr objectSize = ((BFRTFLAGS & BfRtFlags_ObjectHasDebugFlags) != 0) ? sizeof(intptr) * 2 : sizeof(intptr);
+				int32 typeSize = *(int32*)((uint8*)rawAllocData->mType + objectSize);
+				if (typeSize > 0)
+					dataCount = leak.mAllocInfo.mSize / typeSize;
+			}
+			else
+				typeName = "uint8*";
+
+			String leakStr = StrFormat("(%s)0x%@", typeName.c_str(), leak.mPtr);
+			if (dataCount > 1)
+				leakStr += StrFormat(",%d", dataCount);
+
+			intptr* trace = (intptr*)((uint8*)leak.mPtr + leak.mAllocInfo.mSize);
+			int traceCount = leak.mAllocInfo.mStackTraceCount;
+			if (passLeakCount < 20000)
+			{
+				errorStr += "\x1";
+				errorStr += StrFormat("LEAK\t%s\n", leakStr.c_str());
+				errorStr += StrFormat("   %s\n", leakStr.c_str());
+				if (traceCount > 0)
+				{
+					errorStr += "\x1";
+					errorStr += StrFormat("LEAK\t(System.CallStackAddr*)0x%@", trace);
+					if (traceCount == 1)
+						errorStr += StrFormat(", nm");
+					else
+						errorStr += StrFormat(", %d, na", traceCount);
+					errorStr += StrFormat("\n    [AllocStackTrace]\n");
+				}
+			}
+			if (gDbgErrorString.length() < 256)
+				gDbgErrorString += StrFormat("   %s\n", leakStr.c_str());
+
+			report += StrFormat("   (%s)0x%llx", typeName.c_str(), (unsigned long long)leak.mPtr);
+			if (dataCount > 1)
+				report += StrFormat(",%d", dataCount);
+			report += "\n";
+			AppendStackTrace(report, trace, traceCount);
+			passLeakCount++;
+		}
+
+		if (debuggerPresent)
+		{
+			BFRTCALLBACKS.SetErrorString(gDbgErrorString.c_str());
+			BFRTCALLBACKS.DebugMessageData_SetupError(errorStr.c_str(), 0);
+			BF_DEBUG_BREAK();
+		}
+	}
+
+	if (!debuggerPresent)
+	{
+		report += "Allocation stack traces: resolve with addr2line -f -C -e <binary> <address>\n";
+		fputs(report.c_str(), stderr);
+		fflush(stderr);
+		exit(1);
+	}
 }
 
 #endif

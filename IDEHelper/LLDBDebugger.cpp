@@ -1177,6 +1177,13 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 				mActiveBreakpoint = NULL;
 				mRunState = RunState_Exception;
 			}
+			else if ((thread.IsValid()) && (threadStopReason == lldb::eStopReasonSignal) && (thread.GetStopReasonDataAtIndex(0) == SIGTRAP))
+			{
+				// A break in the program, which can carry a runtime error message
+				mActiveBreakpoint = NULL;
+				mRunState = RunState_Paused;
+				CheckNonDebuggerBreak(thread);
+			}
 			else
 			{
 				mActiveBreakpoint = NULL;
@@ -1184,6 +1191,55 @@ void LLDBDebugger::HandleProcessEvent(lldb::StateType state)
 			}
 		}
 	}
+}
+
+void LLDBDebugger::CheckNonDebuggerBreak(lldb::SBThread& thread)
+{
+	// The runtime's BfDebugMessageData
+	struct BfDebugMessageData
+	{
+		int32 mMessageType;
+		int32 mStackWindbackCount;
+		int32 mBufParamLen;
+		addr_target mBufParam;
+		addr_target mPCOverride;
+	};
+	const int32 MessageType_Error = 1;
+
+	HotSymbol symbol;
+	if (!HotFindExeSymbol("gBfDebugMessageData", symbol))
+		return;
+	BfDebugMessageData messageData;
+	if (!ReadMemory((intptr)symbol.mAddr, sizeof(messageData), &messageData))
+		return;
+	if (messageData.mMessageType == 0)
+		return;
+	// Zero out the type so a later break doesn't repeat this message
+	int32 messageType = 0;
+	WriteMemory((intptr)symbol.mAddr, &messageType, sizeof(messageType));
+	if ((messageData.mMessageType != MessageType_Error) || (messageData.mBufParamLen <= 0))
+		return;
+
+	Array<char> strBuf;
+	strBuf.Resize(messageData.mBufParamLen);
+	if (!ReadMemory((intptr)messageData.mBufParam, messageData.mBufParamLen, strBuf.mVals))
+		return;
+	String str;
+	str.Append(strBuf.mVals, strBuf.mSize);
+
+	// The break comes from libc's raise() or an inline trap, so the window back counts from the first frame in the executable
+	int exeFrameIdx = 0;
+	lldb::SBModule exeModule = HotGetBaseModule();
+	for (uint32 frameIdx = 0; frameIdx < thread.GetNumFrames(); frameIdx++)
+	{
+		if (thread.GetFrameAtIndex(frameIdx).GetModule() == exeModule)
+		{
+			exeFrameIdx = (int)frameIdx;
+			break;
+		}
+	}
+	mRequestedStackFrameIdx = exeFrameIdx + BF_MAX(messageData.mStackWindbackCount - 1, 0);
+	mDebugManager->mOutMessages.push_back(StrFormat("error %s", str.c_str()));
 }
 
 void LLDBDebugger::Update()

@@ -33,9 +33,13 @@ add_definitions(
    -DBF_NO_FBX
    -DFT2_BUILD_LIBRARY
    -DBFSYSLIB_DYNAMIC
-   -DBFRT_NODBGFLAGS
    -DBFRTMERGED
 )
+
+# Linux objects carry allocation info for the debug runtime's leak report
+if (APPLE OR ANDROID)
+  add_definitions(-DBFRT_NODBGFLAGS)
+endif()
 
 set (CMAKE_CXX_STANDARD 11)
 # rt/zmij.c needs C99+; C11 also enables aligned lookup tables. GNU extensions

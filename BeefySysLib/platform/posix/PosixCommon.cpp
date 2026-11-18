@@ -1,6 +1,7 @@
 #include "Common.h"
 #include "BFPlatform.h"
 #include <stdlib.h>
+#include <limits.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #ifdef BF_PLATFORM_LINUX
@@ -2477,16 +2478,34 @@ BFP_EXPORT void BFP_CALLTYPE BfpCritSect_Leave(BfpCritSect* critSect)
     pthread_mutex_unlock(&critSect->mPMutex);
 }
 
+// Each key's destructor, so releasing a key can run it like FlsFree does
+static BfpTLSProc gTLSExitProcs[PTHREAD_KEYS_MAX];
+
 BFP_EXPORT BfpTLS* BFP_CALLTYPE BfpTLS_Create(BfpTLSProc exitProc)
 {
     pthread_key_t key = 0;
     pthread_key_create(&key, exitProc);
+    if ((intptr)key < PTHREAD_KEYS_MAX)
+        gTLSExitProcs[(intptr)key] = exitProc;
     return (BfpTLS*)(intptr)key;
 }
 
 BFP_EXPORT void BFP_CALLTYPE BfpTLS_Release(BfpTLS* tls)
 {
-    pthread_key_delete((pthread_key_t)(intptr)tls);
+    // pthread_key_delete runs no destructors, and the main thread never runs them at exit
+    pthread_key_t key = (pthread_key_t)(intptr)tls;
+    if ((intptr)key < PTHREAD_KEYS_MAX)
+    {
+        BfpTLSProc exitProc = gTLSExitProcs[(intptr)key];
+        gTLSExitProcs[(intptr)key] = NULL;
+        void* value = pthread_getspecific(key);
+        if ((exitProc != NULL) && (value != NULL))
+        {
+            pthread_setspecific(key, NULL);
+            exitProc(value);
+        }
+    }
+    pthread_key_delete(key);
 }
 
 BFP_EXPORT void BFP_CALLTYPE BfpTLS_SetValue(BfpTLS* tls, void* value)
@@ -3834,10 +3853,35 @@ BFP_EXPORT void BFP_CALLTYPE BfpFindFileData_Release(BfpFindFileData* findData)
     delete findData;
 }
 
-BFP_EXPORT int BFP_CALLTYPE BfpStack_CaptureBackTrace(int framesToSkip, intptr* outFrames, int wantFrameCount)
+struct CaptureBackTraceState
 {
-    //
-    return 0;
+    int mSkipCount;
+    intptr* mFrames;
+    int mWantCount;
+    int mCount;
+};
+
+static _Unwind_Reason_Code CaptureBackTraceHandler(struct _Unwind_Context* context, void* ref)
+{
+    CaptureBackTraceState* state = (CaptureBackTraceState*)ref;
+    if (state->mSkipCount > 0)
+    {
+        state->mSkipCount--;
+        return _URC_NO_REASON;
+    }
+    intptr addr = (intptr)_Unwind_GetIP(context);
+    if ((addr == 0) || (state->mCount >= state->mWantCount))
+        return _URC_END_OF_STACK;
+    state->mFrames[state->mCount++] = addr;
+    return _URC_NO_REASON;
+}
+
+// noinline keeps the skipped frame (this function) in place
+BFP_EXPORT __attribute__((noinline)) int BFP_CALLTYPE BfpStack_CaptureBackTrace(int framesToSkip, intptr* outFrames, int wantFrameCount)
+{
+    CaptureBackTraceState state = { framesToSkip + 1, outFrames, wantFrameCount, 0 };
+    _Unwind_Backtrace(&CaptureBackTraceHandler, &state);
+    return state.mCount;
 }
 
 BFP_EXPORT void BFP_CALLTYPE BfpOutput_DebugString(const char* str)

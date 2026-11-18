@@ -417,7 +417,7 @@ namespace System
 #if BF_ENABLE_OBJECT_DEBUG_FLAGS
 			flags |= .ObjectHasDebugFlags;
 #endif
-#if BF_ENABLE_REALTIME_LEAK_CHECK
+#if BF_ENABLE_REALTIME_LEAK_CHECK || BF_ENABLE_SHUTDOWN_LEAK_CHECK
 			flags |= .LeakCheck;
 #endif
 #if BF_DEBUG_ALLOC
