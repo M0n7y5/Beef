@@ -256,22 +256,34 @@ namespace System.Reflection
 		public Result<T> GetReturnCustomAttribute<T>() where T : Attribute
 		{
 			if (Compiler.IsComptime)
+			{
+				for (let attr in GetReturnCustomAttributes<T>())
+					return attr;
 				return .Err;
+			}
 			return mTypeInstance.[Friend]GetCustomAttribute<T>(mData.mMethodData.mReturnCustomAttributesIdx);
 		}
 
 		public AttributeInfo.CustomAttributeEnumerator GetReturnCustomAttributes()
 		{
-			if (Compiler.IsComptime)
-				Runtime.NotImplemented();
 			return mTypeInstance.[Friend]GetCustomAttributes(mData.mMethodData.mReturnCustomAttributesIdx);
+		}
+
+		[Comptime]
+		public AttributeInfo.ComptimeMethodParamCustomAttributeEnumerator GetReturnCustomAttributes()
+		{
+			return .(mData.mComptimeMethodInstance, -1);
 		}
 
 		public AttributeInfo.CustomAttributeEnumerator<T> GetReturnCustomAttributes<T>() where T : Attribute
 		{
-			if (Compiler.IsComptime)
-				Runtime.NotImplemented();
 			return mTypeInstance.[Friend]GetCustomAttributes<T>(mData.mMethodData.mReturnCustomAttributesIdx);
+		}
+
+		[Comptime]
+		public AttributeInfo.ComptimeMethodParamCustomAttributeEnumerator<T> GetReturnCustomAttributes<T>() where T : Attribute
+		{
+			return .(mData.mComptimeMethodInstance, -1);
 		}
 
 		public enum CallError
