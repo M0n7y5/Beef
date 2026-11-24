@@ -157,7 +157,8 @@ namespace System.Reflection
 		{
 			if (Compiler.IsComptime)
 				return .Err;
-			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
+			if ((uint)paramIdx >= (uint)mData.mMethodData.mParamCount)
+				return .Err;
 			return mTypeInstance.[Friend]GetCustomAttribute<T>(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
@@ -165,7 +166,8 @@ namespace System.Reflection
 		{
 			if (Compiler.IsComptime)
 				Runtime.NotImplemented();
-			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
+			if ((uint)paramIdx >= (uint)mData.mMethodData.mParamCount)
+				return .(null);
 			return mTypeInstance.[Friend]GetCustomAttributes(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
@@ -173,7 +175,8 @@ namespace System.Reflection
 		{
 			if (Compiler.IsComptime)
 				Runtime.NotImplemented();
-			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
+			if ((uint)paramIdx >= (uint)mData.mMethodData.mParamCount)
+				return .(null);
 			return mTypeInstance.[Friend]GetCustomAttributes<T>(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
