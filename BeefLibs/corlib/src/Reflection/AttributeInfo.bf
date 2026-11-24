@@ -14,6 +14,77 @@ namespace System.Reflection
 		    *((*(T2**)&data)++)
 		}
 
+		const TypeCode cNamedMembers = (TypeCode)0xFE;
+
+		static void ApplyNamedMembers(void* inData, void* endPtr, void* target)
+		{
+			if (inData == null)
+				return;
+
+			void* data = (uint8*)inData + 1;
+			while (data < endPtr)
+			{
+				let offset = Decode!<int32>(data);
+				let size = Decode!<int32>(data);
+				uint8* dest = (uint8*)target + offset;
+				int64 value = 0;
+
+				var attrDataType = Decode!<TypeCode>(data);
+				switch (attrDataType)
+				{
+				case .NullPtr:
+					value = 0;
+				case .Int8,
+					 .UInt8,
+					 .Char8,
+					 .Boolean:
+					value = Decode!<int8>(data);
+				case .Int16,
+					.UInt16,
+					.Char16:
+					value = Decode!<int16>(data);
+				case .Int32,
+					 .UInt32,
+					 .Char32,
+					 .Float:
+					value = Decode!<int32>(data);
+				case .Int64,
+					.UInt64,
+					.Double:
+					value = Decode!<int64>(data);
+				case (TypeCode)typeof(TypeCode).MaxValue + 9: //BfConstType_TypeOf
+					let argTypeId = Decode!<int32>(data);
+					value = (int)Internal.UnsafeCastToPtr(Type.[Friend]GetType((.)argTypeId));
+				case (TypeCode)typeof(TypeCode).MaxValue + 12: // BfConstType_AggZero
+					Internal.MemSet(dest, 0, size);
+					data = (uint8*)data + size;
+					continue;
+				case (TypeCode)typeof(TypeCode).MaxValue + 19: // BfConstType_Box
+					let boxedTypeId = Decode!<int32>(data);
+					var boxedType = Type.[Friend]GetType_(boxedTypeId);
+					int dataSize = boxedType.InstanceSize - boxedType.[Friend]mMemberDataOffset;
+					using (sBoxedMonitor.Enter())
+					{
+						if (sBoxedValues.TryAdd(data, var keyPtr, var valuePtr))
+						{
+							Object boxedValue = boxedType.CreateObject().Value;
+							void* boxedDataPtr = (uint8*)Internal.UnsafeCastToPtr(boxedValue) + boxedType.[Friend]mMemberDataOffset;
+							Internal.MemCpy(boxedDataPtr, data, dataSize);
+							*valuePtr = boxedValue;
+						}
+						value = (int)Internal.UnsafeCastToPtr(*valuePtr);
+					}
+					data = (uint8*)data + dataSize;
+				case (TypeCode)255:
+					let stringId = Decode!<int32>(data);
+					value = (int)Internal.UnsafeCastToPtr(String.[Friend]sIdStringLiterals[stringId]);
+				default:
+					Runtime.FatalError("Not handled");
+				}
+				Internal.MemCpy(dest, &value, Math.Min(size, sizeof(int64)));
+			}
+		}
+
 		public static bool HasCustomAttribute(void* inAttrData, Type attributeType)
 		{
 			TypeId findTypeId = attributeType.[Friend]mTypeId;
@@ -78,8 +149,14 @@ namespace System.Reflection
 			    Object[] args = scope Object[methodInfo.[Friend]mData.mMethodData.mParamCount];
 
 				int argIdx = 0;
+				void* namedData = null;
 			    while (data < endPtr)
 			    {
+					if (*(TypeCode*)data == cNamedMembers)
+					{
+						namedData = data;
+						break;
+					}
 			        var attrDataType = Decode!<TypeCode>(data);
 					switch (attrDataType)
 					{
@@ -144,6 +221,7 @@ namespace System.Reflection
 					val.Dispose();
 					if (superTargetData != null)
 					{
+						ApplyNamedMembers(namedData, endPtr, superTargetData);
 						var targetAttrType = targetAttr.[Friend]RawGetType();
 						if (!targetAttrType.IsBoxed)
 							return .Err;
@@ -151,6 +229,16 @@ namespace System.Reflection
 						if (targetAttrType.IsBoxedStructPtr)
 							destDataPtr = *(void**)destDataPtr;
 						Internal.MemCpy(destDataPtr, superTargetData, targetAttrType.InstanceSize - targetAttrType.[Friend]mMemberDataOffset);
+					}
+					else if (namedData != null)
+					{
+						var targetAttrType = targetAttr.[Friend]RawGetType();
+						if (!targetAttrType.IsBoxed)
+							return .Err;
+						void* destDataPtr = (uint8*)Internal.UnsafeCastToPtr(targetAttr) + targetAttrType.[Friend]mMemberDataOffset;
+						if (targetAttrType.IsBoxedStructPtr)
+							destDataPtr = *(void**)destDataPtr;
+						ApplyNamedMembers(namedData, endPtr, destDataPtr);
 					}
 				}
 				else
@@ -205,8 +293,15 @@ namespace System.Reflection
 				Variant[] args = scope Variant[methodInfo.[Friend]mData.mMethodData.mParamCount];
 
 				int argIdx = 0;
+				void* namedData = null;
 				while (mData < endPtr)
 				{
+					if (*(TypeCode*)mData == cNamedMembers)
+					{
+						namedData = mData;
+						mData = endPtr;
+						break;
+					}
 				    var attrDataType = AttributeInfo.Decode!<TypeCode>(mData);
 					switch (attrDataType)
 					{
@@ -264,10 +359,11 @@ namespace System.Reflection
 				}
 
 				mTargetAttr.Dispose();
-				Variant.AllocOwned(attrType, out mTargetAttr);
+				void* targetData = Variant.AllocOwned(attrType, out mTargetAttr);
 
 				if (methodInfo.Invoke(mTargetAttr, params args) case .Ok(var val))
 					val.Dispose();
+				ApplyNamedMembers(namedData, endPtr, targetData);
 				
 				for (var variant in ref args)
 					variant.Dispose();
@@ -495,8 +591,15 @@ namespace System.Reflection
 				Object[] args = scope Object[methodInfo.[Friend]mData.mMethodData.mParamCount];
 
 				int argIdx = 0;
+				void* namedData = null;
 				while (mData < endPtr)
 				{
+					if (*(TypeCode*)mData == cNamedMembers)
+					{
+						namedData = mData;
+						mData = endPtr;
+						break;
+					}
 				    var attrDataType = AttributeInfo.Decode!<TypeCode>(mData);
 					switch (attrDataType)
 					{
@@ -539,6 +642,7 @@ namespace System.Reflection
 
 				if (methodInfo.Invoke(&mTargetAttr, params args) case .Ok(var val))
 					val.Dispose();
+				ApplyNamedMembers(namedData, endPtr, &mTargetAttr);
 
 				mAttrIdx++;
 				return true;

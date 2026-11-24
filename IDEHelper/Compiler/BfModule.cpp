@@ -6357,7 +6357,7 @@ BfIRValue BfModule::CreateTypeDataRef(BfType* type, bool forceConstant)
 	return mBfIRBuilder->CreateTypeOf(type, globalVariable);
 }
 
-void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType, BfIRValue arg, SizedArrayImpl<uint8>& data, Dictionary<int, int>& usedStringIdMap)
+bool BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType, BfIRValue arg, SizedArrayImpl<uint8>& data, Dictionary<int, int>& usedStringIdMap)
 {
 #define PUSH_INT8(val) data.push_back((uint8)val)
 #define PUSH_INT16(val) { data.push_back(val & 0xFF); data.push_back((val >> 8) & 0xFF); }
@@ -6371,7 +6371,7 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 	if (constant == NULL)
 	{
 		Fail(StrFormat("Unhandled attribute constant data in '%s'", TypeToString(typeInstance).c_str()));
-		return;
+		return false;
 	}
 
 	if (argType->IsObject())
@@ -6390,7 +6390,7 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 				GetStringObjectValue(stringId, true, true);
 				PUSH_INT8(0xFF); // String
 				PUSH_INT32(*orderedIdPtr);
-				return;
+				return true;
 			}
 		}
 	}
@@ -6411,7 +6411,7 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 				GetStringObjectValue(stringId, true, true);
 				PUSH_INT8(0xFF); // String
 				PUSH_INT32(*orderedIdPtr);
-				return;
+				return true;
 			}
 		}
 	}
@@ -6419,14 +6419,13 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 	if (constant->mConstType == BfConstType_BitCastNull)
 	{
 		PUSH_INT8(BfTypeCode_NullPtr);
-		return;
+		return true;
 	}
 
 	if (constant->mConstType == BfConstType_BitCast)
 	{
 		auto bitcast = (BfConstantBitCast*)constant;
-		EncodeAttributeData(typeInstance, argType, BfIRValue(BfIRValueFlags_Const, bitcast->mTarget), data, usedStringIdMap);
-		return;
+		return EncodeAttributeData(typeInstance, argType, BfIRValue(BfIRValueFlags_Const, bitcast->mTarget), data, usedStringIdMap);
 	}
 
 	PUSH_INT8(constant->mTypeCode);
@@ -6492,7 +6491,7 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 				data.Add(0);
 
 			typeInstance->mConstHolder->WriteConstant(BfIRValue(BfIRValueFlags_Const, box->mTarget), &data[data.mSize - dataSize], boxedType->GetUnderlyingType());
-			return;
+			return true;
 		}
 
 
@@ -6512,6 +6511,7 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 // 		}
 
 		Fail(StrFormat("Unhandled constant box in '%s'", TypeToString(typeInstance).c_str()));
+		return false;
 	}
 
 // 	else if (constant->mConstType == BfConstType_Agg)
@@ -6529,7 +6529,9 @@ void BfModule::EncodeAttributeData(BfTypeInstance* typeInstance, BfType* argType
 	else
 	{
 		Fail(StrFormat("Unhandled attribute constant data in '%s'", TypeToString(typeInstance).c_str()));
+		return false;
 	}
+	return true;
 }
 
 BfIRValue BfModule::CreateFieldData(BfFieldInstance* fieldInstance, int customAttrIdx)
@@ -7810,6 +7812,61 @@ BfIRValue BfModule::CreateTypeData(BfType* type, BfCreateTypeDataContext& ctx, b
 				EncodeAttributeData(typeInstance, argType, arg, data, ctx.mUsedStringIdMap);
 				argIdx++;
 			}
+
+			SizedArray<uint8, 16> namedData;
+			auto _PushNamedInt32 = [&](int32 val)
+			{
+				for (int byteIdx = 0; byteIdx < 4; byteIdx++)
+					namedData.push_back((uint8)(val >> (byteIdx * 8)));
+			};
+			auto _EncodeNamedMember = [&](BfFieldInstance* fieldInstance, BfTypedValue value)
+			{
+				if ((fieldInstance == NULL) || (fieldInstance->mDataOffset < 0) || (!value))
+					return;
+				auto fieldType = fieldInstance->GetResolvedType();
+				if (fieldType->IsPointer())
+				{
+					auto constant = typeInstance->mConstHolder->GetConstant(value.mValue);
+					if ((constant == NULL) || (!constant->IsNull()))
+						return;
+				}
+				SizedArray<uint8, 16> valueData;
+				SetAndRestoreValue<bool> prevIgnoreErrors(mIgnoreErrors, true);
+				if (!EncodeAttributeData(typeInstance, fieldType, value.mValue, valueData, ctx.mUsedStringIdMap))
+					return;
+				if (namedData.IsEmpty())
+					namedData.push_back(0xFE);
+				_PushNamedInt32(fieldInstance->mDataOffset);
+				_PushNamedInt32(fieldType->mSize);
+				for (auto val : valueData)
+					namedData.push_back(val);
+			};
+
+			for (auto& setProp : attr->mSetProperties)
+			{
+				BfPropertyDef* propDef = setProp.mPropertyRef;
+				auto propDecl = BfNodeDynCast<BfPropertyDeclaration>(propDef->mFieldDeclaration);
+				if ((propDecl == NULL) || (propDef->mIsStatic) || (propDecl->mVirtualSpecifier != NULL))
+					continue;
+				BfMethodDef* setMethod = NULL;
+				for (auto methodDef : propDef->mMethods)
+				{
+					if (methodDef->mMethodType == BfMethodType_PropertySetter)
+						setMethod = methodDef;
+				}
+				if ((setMethod == NULL) || (setMethod->mBody != NULL))
+					continue;
+				for (auto& fieldInstance : setProp.mPropertyRef.mTypeInstance->mFieldInstances)
+				{
+					auto fieldDef = fieldInstance.GetFieldDef();
+					if ((fieldDef != NULL) && (fieldDef->mFieldDeclaration == propDecl))
+						_EncodeNamedMember(&fieldInstance, setProp.mParam);
+				}
+			}
+			for (auto& setField : attr->mSetField)
+				_EncodeNamedMember(setField.mFieldRef, setField.mParam);
+			for (auto val : namedData)
+				data.push_back(val);
 
 			int size = (int)data.size() - sizeIdx;
 			*((uint16*)&data[sizeIdx]) = size;
