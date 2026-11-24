@@ -471,6 +471,7 @@ enum CeFunctionKind
 	CeFunctionKind_EmitMethodEntry,
 	CeFunctionKind_EmitMethodExit,
 	CeFunctionKind_EmitMixin,
+	CeFunctionKind_Report,
 	CeFunctionKind_GetStringById,
 	CeFunctionKind_GetIdByString,
 	CeFunctionKind_Output,
