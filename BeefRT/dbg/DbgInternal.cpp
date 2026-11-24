@@ -321,6 +321,13 @@ extern DbgRawAllocData sObjectAllocData;
 
 #define SETUP_ERROR(str, skip) gDbgErrorString = str; BFRTCALLBACKS.DebugMessageData_SetupError(str, skip)
 
+#ifdef BFRTMERGED
+void ReportCheckToTestManager(const char* error);
+#define REPORT_CHECK_TO_TEST_MANAGER(str) ReportCheckToTestManager(str)
+#else
+#define REPORT_CHECK_TO_TEST_MANAGER(str)
+#endif
+
 #ifdef BF_PLATFORM_WINDOWS
 #define BF_CAPTURE_STACK(skipCount, outFrames, wantCount) (int)RtlCaptureStackBackTrace(skipCount, wantCount, (void**)outFrames, NULL)
 #else
@@ -764,6 +771,7 @@ void Internal::Dbg_ObjectPreDelete(bf::System::Object* object)
 		errorStr += "\x1";
 		errorStr += StrFormat("LEAK\t0x%@\n", object);
 		errorStr += StrFormat("   (%s)0x%@\n", typeName.c_str(), object);
+		REPORT_CHECK_TO_TEST_MANAGER(errorStr.c_str());
 		SETUP_ERROR(errorStr.c_str(), 2);
 		BF_DEBUG_BREAK();
 		BFRTCALLBACKS.DebugMessageData_Fatal();
@@ -800,6 +808,7 @@ void Internal::Dbg_ObjectPreCustomDelete(bf::System::Object* object)
 		errorStr += "\x1";
 		errorStr += StrFormat("LEAK\t0x%@\n", object);
 		errorStr += StrFormat("   (%s)0x%@\n", typeName.c_str(), object);
+		REPORT_CHECK_TO_TEST_MANAGER(errorStr.c_str());
 		SETUP_ERROR(errorStr.c_str(), 2);
 		BF_DEBUG_BREAK();
 		BFRTCALLBACKS.DebugMessageData_Fatal();
