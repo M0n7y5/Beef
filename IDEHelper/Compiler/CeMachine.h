@@ -453,6 +453,8 @@ enum CeFunctionKind
 	CeFunctionKind_Type_GetCustomAttributeType,
 	CeFunctionKind_Field_GetCustomAttributeType,
 	CeFunctionKind_Method_GetCustomAttributeType,
+	CeFunctionKind_Method_GetParamCustomAttribute,
+	CeFunctionKind_Method_GetParamCustomAttributeType,
 	CeFunctionKind_GetMethodCount,
 	CeFunctionKind_GetMethod,
 	CeFunctionKind_Method_ToString,

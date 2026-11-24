@@ -153,28 +153,42 @@ namespace System.Reflection
 			}
 		}
 
+		static int32 ComptimeParamIdx(int paramIdx) => ((uint)paramIdx <= (uint)int32.MaxValue) ? (int32)paramIdx : int32.MinValue;
+
 		public Result<T> GetParamCustomAttribute<T>(int paramIdx) where T : Attribute
 		{
 			if (Compiler.IsComptime)
+			{
+				for (let attr in GetParamCustomAttributes<T>(paramIdx))
+					return attr;
 				return .Err;
+			}
 			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
 			return mTypeInstance.[Friend]GetCustomAttribute<T>(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
 		public AttributeInfo.CustomAttributeEnumerator GetParamCustomAttributes(int paramIdx)
 		{
-			if (Compiler.IsComptime)
-				Runtime.NotImplemented();
 			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
 			return mTypeInstance.[Friend]GetCustomAttributes(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
+		[Comptime]
+		public AttributeInfo.ComptimeMethodParamCustomAttributeEnumerator GetParamCustomAttributes(int paramIdx)
+		{
+			return .(mData.mComptimeMethodInstance, ComptimeParamIdx(paramIdx));
+		}
+
 		public AttributeInfo.CustomAttributeEnumerator<T> GetParamCustomAttributes<T>(int paramIdx) where T : Attribute
 		{
-			if (Compiler.IsComptime)
-				Runtime.NotImplemented();
 			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
 			return mTypeInstance.[Friend]GetCustomAttributes<T>(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
+		}
+
+		[Comptime]
+		public AttributeInfo.ComptimeMethodParamCustomAttributeEnumerator<T> GetParamCustomAttributes<T>(int paramIdx) where T : Attribute
+		{
+			return .(mData.mComptimeMethodInstance, ComptimeParamIdx(paramIdx));
 		}
 
 		public bool HasCustomAttribute<T>() where T : Attribute
