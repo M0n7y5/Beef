@@ -3521,8 +3521,9 @@ BfError* BfModule::Warn(int warningNum, const StringImpl& warning, BfAstNode* re
 
 	if ((mCurMethodState != NULL) && (mCurMethodState->mEmitRefNode != NULL))
 	{
-		BfError* bfError = mCompiler->mPassInstance->Warn(warningNum, "Emitted code had errors", mCurMethodState->mEmitRefNode);
-		if (bfError != NULL)
+		const char* summary = "Emitted code had warnings";
+		BfError* bfError = mCompiler->mPassInstance->Warn(warningNum, summary, mCurMethodState->mEmitRefNode);
+		if ((bfError != NULL) && (warningString != summary))
 			mCompiler->mPassInstance->MoreInfo(warningString, refNode);
 		return bfError;
 	}
