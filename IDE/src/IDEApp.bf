@@ -12222,7 +12222,11 @@ namespace IDE
 					return;
 				}
 
+#if CLI
+				Console.WriteLine(line);
+#else
 				mOutputPanel.WriteColoredTextLine(line, .BuildText);
+#endif
 			}
 			mDeferredCompilerText.Clear();
 		}
