@@ -7807,7 +7807,18 @@ BfIRValue BfModule::CreateTypeData(BfType* type, BfCreateTypeDataContext& ctx, b
 			for (auto arg : attr->mCtorArgs)
 			{
 				auto argType = ctorMethodInstance->GetParamType(argIdx);
-				EncodeAttributeData(typeInstance, argType, arg, data, ctx.mUsedStringIdMap);
+				bool hadEncodeError = false;
+				{
+					SetAndRestoreValue<bool> prevIgnoreErrors(mIgnoreErrors, true);
+					SetAndRestoreValue<bool> prevHadIgnoredError(mHadIgnoredError, false);
+					EncodeAttributeData(typeInstance, argType, arg, data, ctx.mUsedStringIdMap);
+					hadEncodeError = mHadIgnoredError;
+				}
+				if (hadEncodeError)
+				{
+					Fail(StrFormat("Attribute '%s' cannot be reflected: argument '%s' of type '%s' has no run time encoding",
+						TypeToString(attr->mType).c_str(), ctorMethodInstance->GetParamName(argIdx).c_str(), TypeToString(argType).c_str()), attr->mRef);
+				}
 				argIdx++;
 			}
 
