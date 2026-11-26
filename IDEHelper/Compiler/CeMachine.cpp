@@ -5732,7 +5732,15 @@ BfTypedValue CeContext::Call(CeCallSource callSource, BfModule* module, BfMethod
 		if (((constant->mConstType == BfConstType_AggZero) || (constant->mConstType == BfConstType_Agg)) &&
 			((paramType->IsPointer()) || (paramType->IsRef())))
 			compositeType = paramType->GetUnderlyingType();
-		if (compositeType != NULL)
+		if ((compositeType != NULL) && (argIdx == thisArgIdx) && (constant->mConstType == BfConstType_AggCE))
+		{
+			// A lowered struct's 'this' is passed by value even to a mutating method, so a copy would lose a constructor's writes
+			stackPtr -= ceModule->mSystem->mPtrSize;
+			int64 addr64 = ((BfConstantAggCE*)constant)->mCEAddr;
+			thisAddr = addr64;
+			memcpy(stackPtr, &addr64, ceModule->mSystem->mPtrSize);
+		}
+		else if (compositeType != NULL)
 		{
 			useCompositeAddr -= compositeType->mSize;
 			if (!WriteConstant(module, useCompositeAddr, constant, compositeType, isParams))
