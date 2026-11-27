@@ -3083,9 +3083,6 @@ void BfModule::DoCEEmit(BfTypeInstance* typeInstance, bool& hadNewMembers, bool 
 	ceEmitContext.mType = typeInstance;
 	ExecuteCEOnCompile(&ceEmitContext, typeInstance, BfCEOnCompileKind_TypeInit, underlyingTypeDeferred);
 	hadNewMembers = (typeInstance->mTypeDef->mEmitParent != NULL);
-
-	if (ceEmitContext.mFailed)
-		TypeFailed(typeInstance);
 }
 
 void BfModule::DoCEEmit(BfMethodInstance* methodInstance)
