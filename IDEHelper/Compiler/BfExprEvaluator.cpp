@@ -15469,6 +15469,12 @@ BfLambdaInstance* BfExprEvaluator::GetLambdaInstance(BfLambdaBindExpression* lam
 
 					auto outerLocal = localVar;
 
+					if (localVar->mCompositeCount >= 0)
+					{
+						mModule->Fail(StrFormat("Unable to capture '%s'", localVar->mName.c_str()), lambdaBindExpr);
+						continue;
+					}
+
 					if ((localVar->mConstValue) || (localVar->mResolvedType->IsValuelessType()))
 					{
 						closureState.mConstLocals.push_back(*outerLocal);
@@ -18508,7 +18514,7 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 			continue;
 		}
 
-		BfType* wantType = methodInstance->mParams[paramIdx].mResolvedType;		
+		BfType* wantType = methodInstance->GetParamType(paramIdx);
 
 		if ((arg.mArgFlags & BfArgFlag_VariableDeclaration) != 0)
 		{
@@ -18886,6 +18892,8 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 			mixinState->mArgConsts.Add(newLocalVar->mConstValue);
 	};
 
+	BfLocalVariable* packLocal = NULL;
+
 	argExprEvaluatorItr = argExprEvaluators.begin();
 	for (int argIdx = methodDef->mIsStatic ? 0 : -1; argIdx < (int)explicitParamCount; argIdx++)
 	{
@@ -18916,6 +18924,7 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 		BfTypedValue argValue;
 
 		BfLocalVariable* localVar = new BfLocalVariable();
+		bool isPackElement = false;
 
 		if (argIdx == -1)
 		{
@@ -18927,9 +18936,26 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 		else
 		{
 			auto arg = &args[argIdx];
-			auto paramDef = methodDef->mParams[paramIdx];
+			auto& methodParam = methodInstance->mParams[implicitParamCount + paramIdx];
+			auto paramDef = methodDef->mParams[methodParam.mParamDefIdx];
 
-			localVar->mName = paramDef->mName;
+			if (methodParam.mDelegateParamIdx != -1)
+			{
+				if (packLocal == NULL)
+				{
+					packLocal = new BfLocalVariable();
+					packLocal->mName = paramDef->mName;
+					packLocal->mResolvedType = methodParam.mResolvedType;
+					packLocal->mCompositeCount = 0;
+					packLocal->mAssignedKind = BfLocalVarAssignKind_Unconditional;
+					mModule->DoAddLocalVariable(packLocal);
+					endLocalIdx++;
+				}
+				isPackElement = true;
+				localVar->mName = methodInstance->GetParamName(implicitParamCount + paramIdx);
+			}
+			else
+				localVar->mName = paramDef->mName;
 
 			if (!arg->mTypedValue)
 			{
@@ -18943,6 +18969,8 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 
 		if (!argValue)
 			continue;
+		if (isPackElement)
+			packLocal->mCompositeCount++;
 
 		localVar->mResolvedType = argValue.mType;
 		if (argValue.mType->IsRef())
@@ -19042,8 +19070,10 @@ void BfExprEvaluator::InjectMixin(BfAstNode* targetSrc, BfTypedValue target, boo
 	argExprEvaluatorItr = argExprEvaluators.begin();
 	for (; localIdx < endLocalIdx; localIdx++)
 	{
-		auto exprEvaluator = *argExprEvaluatorItr;
 		BfLocalVariable* localVar = curMethodState->mLocals[localIdx];
+		if (localVar->mCompositeCount >= 0)
+			continue;
+		auto exprEvaluator = *argExprEvaluatorItr;
 		//TODO: Merge unassigned flags together
 		if ((exprEvaluator != NULL) && (exprEvaluator->mResultLocalVar != NULL))
 		{
