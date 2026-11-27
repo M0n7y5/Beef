@@ -19,6 +19,7 @@ namespace BeefBuild
 
 		const int cProgressSize = 30;
 		int mProgressIdx = 0;		
+		bool mProgressBar;
 		public bool mIsTest;
 		public bool mTestIncludeIgnored;
 		public bool mDidRun;
@@ -65,6 +66,8 @@ namespace BeefBuild
 
 			if (mVerbosity == .Default)
 				mVerbosity = .Normal;
+
+			mProgressBar = (mVerbosity >= .Normal) && IsStdOutTerminal();
 
 			if (mConfigName.IsEmpty)
 			{
@@ -350,11 +353,28 @@ namespace BeefBuild
 			return false;
 		}
 
+#if BF_PLATFORM_WINDOWS
+		[CLink, CallingConvention(.Stdcall)]
+		static extern Windows.IntBool GetConsoleMode(Windows.Handle hConsoleHandle, out uint32 mode);
+#else
+		[CLink]
+		static extern int32 isatty(int32 fd);
+#endif
+
+		static bool IsStdOutTerminal()
+		{
+#if BF_PLATFORM_WINDOWS
+			return GetConsoleMode(Windows.GetStdHandle(Windows.STD_OUTPUT_HANDLE), var mode);
+#else
+			return isatty(1) != 0;
+#endif
+		}
+
 		protected override void BeefCompileStarted()
 		{
 			base.BeefCompileStarted();
 
-			if (mVerbosity >= .Normal)
+			if (mProgressBar)
 			{
 				if (cProgressSize > 0)
 				{
@@ -370,7 +390,7 @@ namespace BeefBuild
 
 		void WriteProgress(float pct)
 		{
-			if (mVerbosity >= .Normal)
+			if (mProgressBar)
 			{
 				int progressIdx = (int)Math.Round(pct * cProgressSize);
 				while (progressIdx > mProgressIdx)
@@ -385,7 +405,7 @@ namespace BeefBuild
 		{
 			base.BeefCompileDone();
 			WriteProgress(1.0f);
-			if (mVerbosity >= .Normal)
+			if (mProgressBar)
 				Console.WriteLine("");
 		}
 
