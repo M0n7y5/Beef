@@ -31,6 +31,54 @@ namespace Tests
 			}
 		}
 
+		struct StructG<T>
+		{
+			public int mA;
+			public int mB;
+
+			public this()
+			{
+				mA = 0;
+				mB = 0;
+			}
+
+			public this(int a)
+			{
+				mA = a;
+				mB = 0;
+			}
+		}
+
+		struct StructG2<T, T2>
+		{
+			public int mB;
+		}
+
+		static StructG<int> sG = StructG<int>() { mB = 1 };
+
+		static int GetB(StructG<int> val) => val.mB;
+
+		static StructG<int> MakeG() => StructG<int>() { mB = 2 };
+
+		[Test]
+		public static void TestGenericValueInitializers()
+		{
+			int d = -1;
+			let ga = StructG<int>() { mB = 3 };
+			Test.Assert(ga.mB == 3);
+			let gb = StructG<int>(4) { mB = 5 };
+			Test.Assert((gb.mA == 4) && (gb.mB == 5));
+			let gc = StructG<StructG<int>>() { mB = 6 };
+			Test.Assert(gc.mB == 6);
+			let gd = StructG2<int, float>() { mB = 7 };
+			Test.Assert(gd.mB == 7);
+			Test.Assert(GetB(StructG<int>() { mB = 8 }) == 8);
+			let ge = (d < 0) ? StructG<int>() { mB = 9 } : StructG<int>() { mB = 10 };
+			Test.Assert(ge.mB == 9);
+			Test.Assert(sG.mB == 1);
+			Test.Assert(MakeG().mB == 2);
+		}
+
 		[Test]
 		public static void TestBasics()
 		{
