@@ -800,9 +800,11 @@ namespace System
 		static extern bool Comptime_Type_GetCustomAttribute(int32 typeId, int32 attributeIdx, void* dataPtr);
 		static extern bool Comptime_Field_GetCustomAttribute(int32 typeId, int32 fieldIdx, int32 attributeIdx, void* dataPtr);
 		static extern bool Comptime_Method_GetCustomAttribute(int64 methodHandle, int32 attributeIdx, void* dataPtr);
+		static extern bool Comptime_Method_GetParamCustomAttribute(int64 methodHandle, int32 paramIdx, int32 attributeIdx, void* dataPtr);
 		static extern Type Comptime_Type_GetCustomAttributeType(int32 typeId, int32 attributeIdx);
 		static extern Type Comptime_Field_GetCustomAttributeType(int32 typeId, int32 fieldIdx, int32 attributeIdx);
 		static extern Type Comptime_Method_GetCustomAttributeType(int64 methodHandle, int32 attributeIdx);
+		static extern Type Comptime_Method_GetParamCustomAttributeType(int64 methodHandle, int32 paramIdx, int32 attributeIdx);
 		static extern int32 Comptime_GetMethodCount(int32 typeId);
 		static extern int64 Comptime_GetMethod(int32 typeId, int32 methodIdx);
 		static extern String Comptime_Method_ToString(int64 methodHandle);

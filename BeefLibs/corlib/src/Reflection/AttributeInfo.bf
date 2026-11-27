@@ -435,6 +435,56 @@ namespace System.Reflection
 			}
 		}
 
+		public struct ComptimeMethodParamCustomAttributeEnumerator : IEnumerator<Variant>, IDisposable
+		{
+			int64 mMethodHandle;
+			int32 mParamIdx;
+			int32 mAttrIdx;
+			Variant mTargetAttr;
+
+			public this(int64 methodHandle, int32 paramIdx)
+			{
+				mMethodHandle = methodHandle;
+				mParamIdx = paramIdx;
+				mAttrIdx = -1;
+				mTargetAttr = default;
+			}
+
+			public Variant Current
+			{
+				get
+				{
+					return mTargetAttr;
+				}
+			}
+
+			public bool MoveNext() mut
+			{
+				let attrType = Type.[Friend]Comptime_Method_GetParamCustomAttributeType(mMethodHandle, mParamIdx, ++mAttrIdx);
+				if (attrType != null)
+				{
+					mTargetAttr.Dispose();
+					void* data = Variant.Alloc(attrType, out mTargetAttr);
+
+					if (Type.[Friend]Comptime_Method_GetParamCustomAttribute(mMethodHandle, mParamIdx, mAttrIdx, data))
+						return true;
+				}
+				return false;
+			}
+
+			public void Dispose() mut
+			{
+				mTargetAttr.Dispose();
+			}
+
+			public Result<Variant> GetNext() mut
+			{
+				if (!MoveNext())
+					return .Err;
+				return Current;
+			}
+		}
+
 		public struct CustomAttributeEnumerator<T> : IEnumerator<T>
 		{
 			void* mData;
@@ -684,6 +734,56 @@ namespace System.Reflection
 					if (attrType == typeof(T))
 					{
 						if (Type.[Friend]Comptime_Method_GetCustomAttribute(mMethodHandle, mAttrIdx, &mTargetAttr))
+							return true;
+					}
+				} while (attrType != null);
+				return false;
+			}
+
+			public void Dispose()
+			{
+			}
+
+			public Result<T> GetNext() mut
+			{
+				if (!MoveNext())
+					return .Err;
+				return Current;
+			}
+		}
+
+		public struct ComptimeMethodParamCustomAttributeEnumerator<T> : IEnumerator<T>
+		{
+			int64 mMethodHandle;
+			int32 mParamIdx;
+			int32 mAttrIdx;
+			T mTargetAttr;
+
+			public this(int64 methodHandle, int32 paramIdx)
+			{
+				mMethodHandle = methodHandle;
+				mParamIdx = paramIdx;
+				mAttrIdx = -1;
+				mTargetAttr = ?;
+			}
+
+			public T Current
+			{
+				get
+				{
+					return mTargetAttr;
+				}
+			}
+
+			public bool MoveNext() mut
+			{
+				Type attrType = null;
+				repeat
+				{
+					attrType = Type.[Friend]Comptime_Method_GetParamCustomAttributeType(mMethodHandle, mParamIdx, ++mAttrIdx);
+					if (attrType == typeof(T))
+					{
+						if (Type.[Friend]Comptime_Method_GetParamCustomAttribute(mMethodHandle, mParamIdx, mAttrIdx, &mTargetAttr))
 							return true;
 					}
 				} while (attrType != null);
