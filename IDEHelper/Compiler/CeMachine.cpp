@@ -3794,6 +3794,7 @@ CeContext::CeContext()
 	mCallerActiveTypeDef = NULL;
 	mCurExpectingType = NULL;
 	mCurEmitContext = NULL;
+	mDroppedRefType = NULL;
 	mTypeDeclState = NULL;
 }
 
@@ -4513,7 +4514,14 @@ bool CeContext::GetCustomAttribute(BfModule* module, BfIRConstHolder* constHolde
 	if (foreignConstant->mConstType == BfConstType_AggCE)
 	{
 		auto constAggData = (BfConstantAggCE*)foreignConstant;
+		ceContext->mDroppedRefType = NULL;
 		auto value = ceContext->CreateConstant(module, ceContext->mMemory.mVals + constAggData->mCEAddr, customAttr->mType);
+		if (ceContext->mDroppedRefType != NULL)
+		{
+			module->Fail(StrFormat("Attribute '%s' cannot be read at comptime: field '%s' holds a '%s' reference, which is not kept",
+				module->TypeToString(customAttr->mType).c_str(), ceContext->mDroppedRefPath.c_str(),
+				module->TypeToString(ceContext->mDroppedRefType).c_str()), customAttr->mRef);
+		}
 		if (!value)
 			Fail("Failed to encoded attribute");
 		auto attrConstant = module->mBfIRBuilder->GetConstant(value);
@@ -5211,6 +5219,11 @@ BfIRValue CeContext::CreateConstant(BfModule* module, uint8* ptr, BfType* bfType
 
 		if (typeInst->IsObjectOrInterface())
 		{
+			if (mDroppedRefType == NULL)
+			{
+				mDroppedRefType = typeInst;
+				mDroppedRefPath.Clear();
+			}
 			if ((mCurEvalFlags & CeEvalFlags_IgnoreConstEncodeFailure) == 0)
 				Fail(StrFormat("Reference type '%s' return value not allowed", module->TypeToString(typeInst).c_str()));
 			return irBuilder->CreateConstNull(irBuilder->MapType(typeInst));
@@ -5255,7 +5268,14 @@ BfIRValue CeContext::CreateConstant(BfModule* module, uint8* ptr, BfType* bfType
 					continue;
 				}
 
+				bool hadDroppedRef = mDroppedRefType != NULL;
 				auto result = CreateConstant(module, instData + fieldInstance.mDataOffset, fieldInstance.mResolvedType);
+				if ((!hadDroppedRef) && (mDroppedRefType != NULL) && (fieldInstance.GetFieldDef() != NULL))
+				{
+					if ((!mDroppedRefPath.IsEmpty()) && (mDroppedRefPath[0] != '['))
+						mDroppedRefPath.Insert(0, '.');
+					mDroppedRefPath.Insert(0, fieldInstance.GetFieldDef()->mName);
+				}
 				if (!result)
 					return BfIRValue();
 
@@ -5296,7 +5316,10 @@ BfIRValue CeContext::CreateConstant(BfModule* module, uint8* ptr, BfType* bfType
 		auto sizedArrayType = (BfSizedArrayType*)bfType;
 		for (int i = 0; i < sizedArrayType->mElementCount; i++)
 		{
+			bool hadDroppedRef = mDroppedRefType != NULL;
 			auto elemValue = CreateConstant(module, ptr + i * sizedArrayType->mElementType->GetStride(), sizedArrayType->mElementType);
+			if ((!hadDroppedRef) && (mDroppedRefType != NULL))
+				mDroppedRefPath.Insert(0, StrFormat("[%d]", i));
 			if (!elemValue)
 				return BfIRValue();
 			values.Add(elemValue);

@@ -18,6 +18,11 @@ WaitForResolve()
 SleepTicks(20)
 AssertFileErrors()
 
+ShowFile("src/AttributeArrays.bf")
+WaitForResolve()
+SleepTicks(20)
+AssertFileErrors()
+
 ShowFile("src/Defer.bf")
 WaitForResolve()
 SleepTicks(20)

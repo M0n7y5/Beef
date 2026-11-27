@@ -1175,6 +1175,8 @@ public:
 	BfModule* mCurModule;
 	CeFrame* mCurFrame;
 	CeEmitContext* mCurEmitContext;
+	BfType* mDroppedRefType;
+	String mDroppedRefPath;
 	String mWorkingDir;
 
 public:
