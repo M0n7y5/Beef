@@ -4491,6 +4491,8 @@ static BfCustomAttributes* GetParamCustomAttributes(BfMethodInstance* methodInst
 	if ((methodInstance->mMethodInfoEx == NULL) || (methodInstance->mMethodInfoEx->mMethodCustomAttributes == NULL))
 		return NULL;
 	auto methodCustomAttributes = methodInstance->mMethodInfoEx->mMethodCustomAttributes;
+	if (paramIdx == -1)
+		return methodCustomAttributes->mReturnCustomAttributes;
 	if ((paramIdx < 0) || (paramIdx >= (int)methodCustomAttributes->mParamCustomAttributes.size()))
 		return NULL;
 	return methodCustomAttributes->mParamCustomAttributes[paramIdx];

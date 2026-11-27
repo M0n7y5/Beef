@@ -163,13 +163,15 @@ namespace System.Reflection
 					return attr;
 				return .Err;
 			}
-			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
+			if ((uint)paramIdx >= (uint)mData.mMethodData.mParamCount)
+				return .Err;
 			return mTypeInstance.[Friend]GetCustomAttribute<T>(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
 		public AttributeInfo.CustomAttributeEnumerator GetParamCustomAttributes(int paramIdx)
 		{
-			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
+			if ((uint)paramIdx >= (uint)mData.mMethodData.mParamCount)
+				return .(null);
 			return mTypeInstance.[Friend]GetCustomAttributes(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
@@ -181,7 +183,8 @@ namespace System.Reflection
 
 		public AttributeInfo.CustomAttributeEnumerator<T> GetParamCustomAttributes<T>(int paramIdx) where T : Attribute
 		{
-			Debug.Assert((uint)paramIdx < (uint)mData.mMethodData.mParamCount);
+			if ((uint)paramIdx >= (uint)mData.mMethodData.mParamCount)
+				return .(null);
 			return mTypeInstance.[Friend]GetCustomAttributes<T>(mData.mMethodData.mParamData[paramIdx].mCustomAttributesIdx);
 		}
 
@@ -256,22 +259,34 @@ namespace System.Reflection
 		public Result<T> GetReturnCustomAttribute<T>() where T : Attribute
 		{
 			if (Compiler.IsComptime)
+			{
+				for (let attr in GetReturnCustomAttributes<T>())
+					return attr;
 				return .Err;
+			}
 			return mTypeInstance.[Friend]GetCustomAttribute<T>(mData.mMethodData.mReturnCustomAttributesIdx);
 		}
 
 		public AttributeInfo.CustomAttributeEnumerator GetReturnCustomAttributes()
 		{
-			if (Compiler.IsComptime)
-				Runtime.NotImplemented();
 			return mTypeInstance.[Friend]GetCustomAttributes(mData.mMethodData.mReturnCustomAttributesIdx);
+		}
+
+		[Comptime]
+		public AttributeInfo.ComptimeMethodParamCustomAttributeEnumerator GetReturnCustomAttributes()
+		{
+			return .(mData.mComptimeMethodInstance, -1);
 		}
 
 		public AttributeInfo.CustomAttributeEnumerator<T> GetReturnCustomAttributes<T>() where T : Attribute
 		{
-			if (Compiler.IsComptime)
-				Runtime.NotImplemented();
 			return mTypeInstance.[Friend]GetCustomAttributes<T>(mData.mMethodData.mReturnCustomAttributesIdx);
+		}
+
+		[Comptime]
+		public AttributeInfo.ComptimeMethodParamCustomAttributeEnumerator<T> GetReturnCustomAttributes<T>() where T : Attribute
+		{
+			return .(mData.mComptimeMethodInstance, -1);
 		}
 
 		public enum CallError
