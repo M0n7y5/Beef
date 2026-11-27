@@ -62,7 +62,8 @@ static String ShadowInlineName(const StringImpl& name)
 }
 
 // LLDB hides artificial parameters (a lambda's __closure) as runtime support values, and DebugTarget gives a
-// repeated name an '@' per earlier use and cuts a "$a" alias suffix
+// repeated name an '@' per earlier use, cuts a "$a" alias suffix and a parameter's "$1000" default, and lists a
+// splatted parameter once by its own name
 static String ShadowLLDBAutos(lldb::SBFrame& frame)
 {
 	lldb::SBVariablesOptions options;
@@ -77,9 +78,23 @@ static String ShadowLLDBAutos(lldb::SBFrame& frame)
 	for (int i = 0; i < (int)variables.GetSize(); i++)
 	{
 		const char* namePtr = variables.GetValueAtIndex(i).GetName();
-		if ((namePtr == NULL) || (namePtr[0] == '$'))
+		if (namePtr == NULL)
 			continue;
+		if (namePtr[0] == '$')
+		{
+			const char* splatEnd = strchr(namePtr + 1, '$');
+			if (splatEnd == NULL)
+				continue;
+			String splatName(namePtr + 1, (int)(splatEnd - namePtr - 1));
+			if (!names.Contains(splatName))
+				names.Add(splatName);
+			continue;
+		}
 		String name = namePtr;
+		int defaultIdx = (int)name.IndexOf('$');
+		if ((defaultIdx != -1) && (defaultIdx + 1 < (int)name.length()) &&
+			((name[defaultIdx + 1] == '_') || ((name[defaultIdx + 1] >= '0') && (name[defaultIdx + 1] <= '9'))))
+			name.RemoveToEnd(defaultIdx);
 		while (names.Contains(name))
 			name.Insert(0, '@');
 		names.Add(name);
@@ -452,7 +467,7 @@ void LLDBDebugger::ShadowCheckTLS()
 
 			// A target-level SBValue has no thread, so a thread-local is looked up through the stopped thread's frame
 			uint64 lldbAddr = mLLDBFrames[0].GetValueForVariablePath(lldbName.c_str()).GetLoadAddress();
-			// LLDB's debug info doesn't place statics a hot compile adds, which its evaluator reads through HotFindThreadLocalOffset
+			// LLDB's debug info lacks statics a hot compile adds, which the hot loader's TLS table has
 			uint64 tlsOffset = 0;
 			uint64 blockAddr = 0;
 			if ((lldbAddr == LLDB_INVALID_ADDRESS) && (HotFindThreadLocalOffset(lldbName.c_str(), tlsOffset)) && (HotGetTlsBlockAddr(mLLDBFrames[0], blockAddr)))

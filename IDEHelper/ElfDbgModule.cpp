@@ -152,8 +152,23 @@ addr_target ElfDbgModule::RemapAddr(addr_target addr)
 	return addr + (addr_target)(mImageBase - mPreferredImageBase);
 }
 
+bool ElfDbgModule::DbgIsStrMutable(const char* str)
+{
+	if ((mMappedFile.mData != NULL) && (str >= (const char*)mMappedFile.mData) && (str < (const char*)mMappedFile.mData + mMappedFile.mFileSize))
+		return false;
+	if (IsObjectFile())
+		return GetLinkedModule()->DbgIsStrMutable(str);
+	return true;
+}
+
 bool ElfDbgModule::ResolveTLSAddress(addr_target operand, CPURegisters* registers, addr_target& outAddr)
 {
+	if (mIsRelocatable)
+	{
+		DbgModule* linkedModule = GetLinkedModule();
+		return (linkedModule != this) && (linkedModule->ResolveTLSAddress(operand, registers, outAddr));
+	}
+
 	if ((mTLSMemSize == 0) || (registers == NULL))
 		return false;
 
@@ -362,7 +377,27 @@ bool ElfDbgModule::ReadELF(const uint8* data, int64 size, DbgModuleKind moduleKi
 		ReadSymbols(FindSection(".dynsym"), FindSection(".dynstr"));
 
 	if (mIsRelocatable)
+	{
+		bool addHotTypes = mHotPrimaryTypes.size() == 0;
+		for (int typeIdx = mStartTypeIdx; typeIdx < mEndTypeIdx; typeIdx++)
+		{
+			DbgType* dbgType = linkedModule->mTypes[typeIdx];
+			if ((!dbgType->mIsDeclaration) || (dbgType->mMethodList.IsEmpty()))
+				continue;
+			DbgType* primaryType = dbgType->GetPrimaryType();
+			if (primaryType == dbgType)
+				continue;
+			while (!dbgType->mMethodList.IsEmpty())
+			{
+				DbgSubprogram* method = dbgType->mMethodList.PopFront();
+				method->mParentType = primaryType;
+				primaryType->mMethodList.PushBack(method);
+			}
+			if (addHotTypes)
+				mHotPrimaryTypes.Add(primaryType);
+		}
 		HotReplaceTypes();
+	}
 
 	RemoveUnusedSrcFiles();
 

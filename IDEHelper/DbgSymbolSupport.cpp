@@ -588,20 +588,6 @@ String DbgTargetHost::FindCodeAddresses(const StringImpl& fileName, int line, in
 	return result;
 }
 
-void DbgTargetHost::CreateFilterName(String& name, DbgType* type)
-{
-	CreateFilterName(name, type->mParent);
-
-	switch (type->mTypeCode)
-	{
-	case DbgType_Namespace:
-	case DbgType_Struct:
-	case DbgType_Class:
-		name += type->mName;
-		break;
-	}
-}
-
 void DbgTargetHost::CreateFilterName(String& name, const char* srcStr, DbgLanguage language)
 {
 	int chevronDepth = 0;

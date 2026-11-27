@@ -577,6 +577,8 @@ public:
 	DbgExtType mExtType;
 	DbgTypePriority mPriority; // Is the one stored in the type map
 	bool mSizeCalculated;
+	bool mSizeIsStride;
+	bool mSizeIsCount;
 
 	DbgType* mNext;
 

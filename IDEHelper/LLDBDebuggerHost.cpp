@@ -173,9 +173,29 @@ int LLDBDebugger::GetActiveThreadId()
 	return GetActiveThread();
 }
 
+int LLDBDebugger::GetEvalThreadId()
+{
+	return GetActiveThread();
+}
+
+bool LLDBDebugger::IsMemoryBreakpointSizeValid(addr_target addr, int size)
+{
+	return (size > 0) && (size <= 32);
+}
+
+bool LLDBDebugger::HasMemoryBreakpoint(addr_target addr, int size)
+{
+	for (auto bp : mBreakpoints)
+	{
+		if ((bp->mResolvedAddr == (uintptr)addr) && (bp->mMemoryBreakpointSize == size) && (!bp->mWatchpointIds.IsEmpty()))
+			return true;
+	}
+	return false;
+}
+
 String LLDBDebugger::GetActiveThreadName()
 {
-	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
+	if (!mLLDBProcess.IsValid())
 		return String();
 	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
 	if ((!thread.IsValid()) || (thread.GetName() == NULL))
@@ -210,7 +230,7 @@ int LLDBDebugger::GetTargetProcessId()
 
 bool LLDBDebugger::PopulateRegisters(CPURegisters* registers)
 {
-	if ((IsTargetBusy()) || (!mLLDBProcess.IsValid()))
+	if (!mLLDBProcess.IsValid())
 		return false;
 	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
 	if (!thread.IsValid())
@@ -321,71 +341,374 @@ int LLDBDebugger::SetProtection(intptr address, int size, int prot)
 	return 0;
 }
 
-DbgTypedValue LLDBDebugger::GetRegister(const StringImpl& regName, DbgLanguage language, CPURegisters* registers, Array<RegForm>* regForms)
+bool LLDBDebugger::AssignToReg(int callStackIdx, DbgTypedValue regVal, DbgTypedValue value, String& outError)
 {
-	HostUnsupported("GetRegister");
-	return DbgTypedValue();
-}
+	int lldbIdx = HostToLLDBFrameIdx(callStackIdx);
+	if ((lldbIdx < 0) || (lldbIdx >= (int)mLLDBFrames.size()))
+	{
+		outError = "Invalid call stack index";
+		return false;
+	}
+	lldb::SBFrame& frame = mLLDBFrames[lldbIdx];
+	int regNum = regVal.mRegNum;
+	lldb::SBError error;
 
-bool LLDBDebugger::AssignToReg(int callStackIdx, DbgTypedValue reg, DbgTypedValue value, String& outError)
-{
-	HostUnsupported("AssignToReg");
-	outError = "Not supported";
-	return false;
+	if ((regNum >= X64Reg_INTREG_FIRST) && (regNum <= X64Reg_INTREG_LAST))
+	{
+		lldb::SBValue reg = frame.FindRegister(sIntRegNames[regNum - X64Reg_INTREG_FIRST]);
+		if ((!reg.IsValid()) || (!reg.SetValueFromCString(StrFormat("%llu", (unsigned long long)value.GetInt64()).c_str(), error)))
+		{
+			outError = "Failed to set register";
+			return false;
+		}
+	}
+	else if ((regNum >= X64Reg_XMMREG_FIRST) && (regNum <= X64Reg_XMMREG_LAST))
+	{
+		int xmmMajor = (regNum - X64Reg_XMMREG_FIRST) >> 2;
+		int xmmMinor = (regNum - X64Reg_XMMREG_FIRST) & 3;
+		lldb::SBValue reg = frame.FindRegister(StrFormat("xmm%d", xmmMajor).c_str());
+		if (!reg.IsValid())
+		{
+			outError = "Failed to set register";
+			return false;
+		}
+		lldb::SBData data = reg.GetData();
+		CPURegisters::XmmReg xmm;
+		if ((data.GetByteSize() < sizeof(xmm)) || (data.ReadRawData(error, 0, &xmm, sizeof(xmm)) != sizeof(xmm)))
+		{
+			outError = "Failed to set register";
+			return false;
+		}
+		int byteCount = value.mType->GetByteCount();
+		if (byteCount == 4)
+			xmm.f[xmmMinor] = value.mSingle;
+		else if ((byteCount == 8) && (xmmMinor < 2))
+			((double*)&xmm)[xmmMinor] = value.mDouble;
+		else
+		{
+			outError = "Invalid XMM set value type";
+			return false;
+		}
+		data.SetData(error, &xmm, sizeof(xmm), data.GetByteOrder(), data.GetAddressByteSize());
+		if ((error.Fail()) || (!reg.SetData(data, error)))
+		{
+			outError = "Failed to set register";
+			return false;
+		}
+	}
+	else if ((regNum >= X64Reg_FLAG_FIRST) && (regNum <= X64Reg_FLAG_LAST))
+	{
+		int flagBit = CPURegisters::GetFlagBitForRegister(regNum);
+		lldb::SBValue reg = frame.FindRegister("rflags");
+		if ((flagBit < 0) || (!reg.IsValid()))
+		{
+			outError = "Unrecognized flag";
+			return false;
+		}
+		uint64 flags = reg.GetValueAsUnsigned(error, 0);
+		if (value.mBool)
+			flags |= ((uint64)1 << flagBit);
+		else
+			flags &= ~((uint64)1 << flagBit);
+		if (!reg.SetValueFromCString(StrFormat("%llu", (unsigned long long)flags).c_str(), error))
+		{
+			outError = "Failed to set register";
+			return false;
+		}
+	}
+	else if ((regNum >= X64Reg_M128_XMMREG_FIRST) && (regNum <= X64Reg_M128_XMMREG_LAST))
+	{
+		outError = "Cannot write directly to 128-bit XMM register, please use inner float components";
+		return false;
+	}
+	else if ((regNum >= X64Reg_CAT_FIRST) && (regNum <= X64Reg_CAT_LAST))
+	{
+		outError = "Cannot write directly to register categories, please use inner float components";
+		return false;
+	}
+	else
+	{
+		outError = "Writing x87 registers is not supported on Linux";
+		return false;
+	}
+
+	ClearCallStack();
+	return true;
 }
 
 bool LLDBDebugger::SetRegisters(CPURegisters* registers)
 {
-	HostUnsupported("SetRegisters");
-	return false;
+	if (!mLLDBProcess.IsValid())
+		return false;
+	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
+	if (!thread.IsValid())
+		return false;
+	lldb::SBFrame frame = thread.GetFrameAtIndex(0);
+	if (!frame.IsValid())
+		return false;
+
+	bool success = true;
+	lldb::SBError error;
+	for (int regIdx = 0; regIdx < BF_ARRAY_COUNT(sIntRegNames); regIdx++)
+	{
+		if ((strcmp(sIntRegNames[regIdx], "fs_base") == 0) || (strcmp(sIntRegNames[regIdx], "rip") == 0))
+			continue;
+		lldb::SBValue reg = frame.FindRegister(sIntRegNames[regIdx]);
+		uint64 value = (uint64)registers->mIntRegsArray[regIdx];
+		if (strcmp(sIntRegNames[regIdx], "rflags") == 0)
+			value &= ~(uint64)0x100;
+		if ((!reg.IsValid()) || (!reg.SetValueFromCString(StrFormat("%llu", (unsigned long long)value).c_str(), error)))
+			success = false;
+	}
+	for (int regIdx = 0; regIdx < CPURegisters::kNumXmmRegs; regIdx++)
+	{
+		lldb::SBValue reg = frame.FindRegister(StrFormat("xmm%d", regIdx).c_str());
+		if (!reg.IsValid())
+		{
+			success = false;
+			continue;
+		}
+		lldb::SBData data = reg.GetData();
+		data.SetData(error, &registers->mXmmRegsArray[regIdx], sizeof(registers->mXmmRegsArray[regIdx]), data.GetByteOrder(), data.GetAddressByteSize());
+		if ((error.Fail()) || (!reg.SetData(data, error)))
+			success = false;
+	}
+	if (!frame.SetPC((lldb::addr_t)registers->GetPC()))
+		success = false;
+	if (mHasSavedRegisters)
+		return success;
+	ClearCallStack();
+	return success;
 }
 
 void LLDBDebugger::SaveAllRegisters()
 {
-	HostUnsupported("SaveAllRegisters");
+	mHasSavedRegisters = false;
+	if (!mLLDBProcess.IsValid())
+		return;
+	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
+	if (!thread.IsValid())
+		return;
+	lldb::SBFrame frame = thread.GetFrameAtIndex(0);
+	if (!frame.IsValid())
+		return;
+	HostReadFrameRegisters(frame, &mSavedRegisters);
+	mSavedRegisterStateId = HostSendThreadPacket(StrFormat("QSaveRegisterState;thread:%llx;", (unsigned long long)thread.GetThreadID()));
+	mSavedRegisterThreadId = thread.GetThreadID();
+	mHasSavedRegisters = true;
+}
+
+// Writing rip through LLDB loses orig_rax, so an interrupted futex wait would return -ERESTARTSYS.
+String LLDBDebugger::HostSendThreadPacket(const StringImpl& packet)
+{
+	lldb::SBCommandReturnObject commandResult;
+	mLLDBDebugger.GetCommandInterpreter().HandleCommand(StrFormat("process plugin packet send %s", packet.c_str()).c_str(), commandResult);
+	String output = commandResult.GetOutput() != NULL ? commandResult.GetOutput() : "";
+	int responseIdx = (int)output.IndexOf("response: ");
+	if (responseIdx == -1)
+		return String();
+	String response = output.Substring(responseIdx + 10);
+	response.Trim();
+	return response;
 }
 
 void LLDBDebugger::RestoreAllRegisters()
 {
-	HostUnsupported("RestoreAllRegisters");
+	if (!mHasSavedRegisters)
+		return;
+	SetRegisters(&mSavedRegisters);
+	if ((!mSavedRegisterStateId.IsEmpty()) && (mSavedRegisterStateId[0] >= '0') && (mSavedRegisterStateId[0] <= '9'))
+		HostSendThreadPacket(StrFormat("QRestoreRegisterState:%s;thread:%llx;", mSavedRegisterStateId.c_str(), (unsigned long long)mSavedRegisterThreadId));
+	mSavedRegisterStateId.Clear();
+	mHasSavedRegisters = false;
 }
 
 void LLDBDebugger::PushValue(CPURegisters* registers, int64 val)
 {
-	HostUnsupported("PushValue");
+	addr_target* regSP = registers->GetSPRegisterRef();
+	*regSP -= sizeof(addr_target);
+	addr_target writeVal = (addr_target)val;
+	WriteMemory(*regSP, &writeVal, sizeof(writeVal));
 }
 
 void LLDBDebugger::PushValue(CPURegisters* registers, const DbgTypedValue& typedValue)
 {
-	HostUnsupported("PushValue");
+	addr_target* regSP = registers->GetSPRegisterRef();
+	*regSP -= sizeof(int64);
+	int64 val = typedValue.mInt64;
+	if (typedValue.mType->IsCompositeType())
+		val = typedValue.mSrcAddress;
+	WriteMemory(*regSP, &val, sizeof(val));
 }
 
 void LLDBDebugger::SetThisRegister(CPURegisters* registers, addr_target val)
 {
-	HostUnsupported("SetThisRegister");
+	registers->mIntRegs.rdi = val;
 }
 
 void LLDBDebugger::AddParamValue(int paramIdx, bool hadThis, CPURegisters* registers, const DbgTypedValue& typedValue)
 {
-	HostUnsupported("AddParamValue");
+	int64* intArgRegs[] = { &registers->mIntRegs.rdi, &registers->mIntRegs.rsi, &registers->mIntRegs.rdx,
+		&registers->mIntRegs.rcx, &registers->mIntRegs.r8, &registers->mIntRegs.r9 };
+	int regIdx = paramIdx + (hadThis ? 1 : 0);
+	if (typedValue.mType->IsFloat())
+	{
+		if (paramIdx < 8)
+		{
+			if (typedValue.mType->mTypeCode == DbgType_Single)
+				registers->mXmmRegsArray[paramIdx].f[0] = typedValue.mSingle;
+			else
+				registers->mXmmDRegsArray[paramIdx].d[0] = typedValue.mDouble;
+		}
+		else
+			PushValue(registers, typedValue);
+	}
+	else if (regIdx < 6)
+		*intArgRegs[regIdx] = typedValue.mType->IsCompositeType() ? (int64)typedValue.mSrcAddress : (int64)typedValue.mPtr;
+	else
+		PushValue(registers, typedValue);
+}
+
+// The SysV red zone
+int LLDBDebugger::GetEvalStackReserve()
+{
+	return 128;
+}
+
+addr_target LLDBDebugger::GetEvalReturnAddress()
+{
+	return mEvalTrapAddr;
+}
+
+bool LLDBDebugger::IsBeefCallRunning()
+{
+	return (mRunState == RunState_DebugEval) && (mDebugPendingExpr != NULL);
+}
+
+bool LLDBDebugger::HostEnsureEvalTrap(String& outError)
+{
+	if (mEvalTrapAddr != 0)
+		return true;
+	addr_target trapAddr = (addr_target)HotAlloc(16, 16, outError);
+	if (trapAddr == 0)
+		return false;
+	uint8 trap = 0xCC;
+	if (!WriteMemory(trapAddr, &trap, 1))
+	{
+		outError = "unable to write the call return trap";
+		return false;
+	}
+	mEvalTrapBreakpoint = mLLDBTarget.BreakpointCreateByAddress((lldb::addr_t)trapAddr);
+	mEvalTrapAddr = trapAddr;
+	ClearCallStack();
+	return true;
+}
+
+void LLDBDebugger::HostRunBeefCall()
+{
+	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
+	mEvalThreadId = thread.IsValid() ? thread.GetThreadID() : 0;
+	mEvalStartTick = BfpSystem_TickCount();
+	LLDBLog("Beef call on thread %llu\n", (unsigned long long)mEvalThreadId);
+	mLLDBProcess.Continue();
+}
+
+void LLDBDebugger::HostHandleBeefCallStop()
+{
+	lldb::SBThread evalThread = mLLDBProcess.GetThreadByID((lldb::tid_t)mEvalThreadId);
+	if (evalThread.IsValid())
+	{
+		lldb::StopReason reason = evalThread.GetStopReason();
+		uint64 pc = evalThread.GetFrameAtIndex(0).GetPC();
+		if ((reason == lldb::eStopReasonBreakpoint) && (pc == (uint64)mEvalTrapAddr))
+		{
+			LLDBLog("Beef call returned on thread %llu\n", (unsigned long long)mEvalThreadId);
+			mLLDBProcess.SetSelectedThread(evalThread);
+			mRunState = RunState_Paused;
+			if (mEvalReturnSlot != 0)
+			{
+				CPURegisters registers;
+				if (PopulateRegisters(&registers))
+					DbgCallConvSysV::StoreLoweredReturn(this, mEvalReturnParts, &registers, mEvalReturnSlot);
+			}
+			mRequestedStackFrameIdx = mDebugPendingExpr->mCallStackIdx;
+			return;
+		}
+		if ((reason == lldb::eStopReasonSignal) || (reason == lldb::eStopReasonException))
+		{
+			mDebugPendingExpr->mException = StrFormat("Exception at 0x%llx in thread %llu, signal %d", (unsigned long long)pc,
+				(unsigned long long)mEvalThreadId, (int)evalThread.GetStopReasonDataAtIndex(0));
+			LLDBLog("Beef call failed: %s\n", mDebugPendingExpr->mException.c_str());
+			mLLDBProcess.SetSelectedThread(evalThread);
+			mRunState = RunState_Paused;
+			RestoreAllRegisters();
+			mRequestedStackFrameIdx = mDebugPendingExpr->mCallStackIdx;
+			return;
+		}
+	}
+
+	LLDBLog("Beef call continuing past a stop\n");
+	mLLDBProcess.Continue();
+}
+
+void LLDBDebugger::HostCancelBeefCall(const StringImpl& reason)
+{
+	LLDBLog("Beef call canceled: %s\n", reason.c_str());
+	mLLDBProcess.SendAsyncInterrupt();
+	String error;
+	HotWaitForStop(error);
+	lldb::SBThread evalThread = mLLDBProcess.GetThreadByID((lldb::tid_t)mEvalThreadId);
+	if (evalThread.IsValid())
+		mLLDBProcess.SetSelectedThread(evalThread);
+	mRunState = RunState_Paused;
+	RestoreAllRegisters();
+	if (mDebugPendingExpr != NULL)
+	{
+		mDebugPendingExpr->mException = reason;
+		mRequestedStackFrameIdx = mDebugPendingExpr->mCallStackIdx;
+	}
+}
+
+void LLDBDebugger::FinishPendingEval()
+{
+	if (mDebugPendingExpr == NULL)
+		return;
+	lldb::SBThread thread = mLLDBProcess.GetSelectedThread();
+	if ((thread.IsValid()) && (mEvalTrapAddr != 0) && (thread.GetFrameAtIndex(0).GetPC() == (uint64)mEvalTrapAddr))
+		RestoreAllRegisters();
+	delete mDebugPendingExpr;
+	mDebugPendingExpr = NULL;
+	mEvalReturnSlot = 0;
+	ClearCallStack();
+}
+
+bool LLDBDebugger::SetupCallArgs(DbgSubprogram* method, SizedArrayImpl<DbgMethodArgument>& argPushQueue, const DbgTypedValue& structRetVal, CPURegisters* registers, DbgTypedValue& outThisVal, String& outError)
+{
+	mEvalReturnSlot = 0;
+	if ((structRetVal.mSrcAddress != 0) && (DbgCallConvSysV::GetLoweredReturnParts(method->mReturnType, mEvalReturnParts)))
+		mEvalReturnSlot = structRetVal.mSrcAddress;
+	return DbgCallConvSysV::SetupCall(this, method, argPushQueue, structRetVal, registers, outThisVal, outError);
 }
 
 bool LLDBDebugger::CheckNeedsSRetArgument(DbgType* retType)
 {
-	HostUnsupported("CheckNeedsSRetArgument");
-	return false;
+	return (retType->IsCompositeType()) && (!retType->IsTypedPrimitive()) && (retType->GetByteCount() > 0);
 }
 
 DbgTypedValue LLDBDebugger::ReadReturnValue(CPURegisters* registers, DbgType* type)
 {
-	HostUnsupported("ReadReturnValue");
-	return DbgTypedValue();
-}
-
-bool LLDBDebugger::ProcessEvalString(DbgCompileUnit* dbgCompileUnit, DbgTypedValue useTypedValue, String& evalStr, String& displayString, DwFormatInfo& formatInfo, DebugVisualizerEntry* debugVis, bool limitLength)
-{
-	HostUnsupported("ProcessEvalString");
-	return false;
+	DbgTypedValue retValue;
+	retValue.mType = type;
+	DbgType* valueType = type->RemoveModifiers();
+	if (valueType->IsTypedPrimitive())
+		valueType = valueType->mTypeParam->RemoveModifiers();
+	if (valueType->mTypeCode == DbgType_Single)
+		retValue.mSingle = registers->mXmmRegsArray[0].f[0];
+	else if (valueType->mTypeCode == DbgType_Double)
+		retValue.mDouble = registers->mXmmDRegsArray[0].d[0];
+	else
+		retValue.mInt64 = registers->mIntRegs.rax;
+	return retValue;
 }
 
 addr_target LLDBDebugger::ReserveHotHeapMemory(addr_target address, int size)
