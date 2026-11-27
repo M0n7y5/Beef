@@ -1,0 +1,12 @@
+FileVersion = 1
+Projects = {LeakTest = {Path = "."}}
+
+[Workspace]
+StartupProject = "LeakTest"
+
+[Configs.Debug.Win64]
+AllocStackTraceDepth = 10
+
+[Configs.Debug.Linux64]
+EnableRealtimeLeakCheck = true
+AllocStackTraceDepth = 10

@@ -9298,6 +9298,9 @@ namespace IDE
 				hasLeakCheck = true;
 				macroList.Add("BF_ENABLE_REALTIME_LEAK_CHECK");
 			}
+			else if ((platform == .Linux) && (workspaceOptions.mEnableRealtimeLeakCheck) && (workspaceOptions.mEnableObjectDebugFlags) &&
+				(workspaceOptions.mAllocType == .Debug) && (workspaceOptions.mRuntimeKind != .Disabled))
+				macroList.Add("BF_ENABLE_SHUTDOWN_LEAK_CHECK");
 
 			if ((workspaceOptions.mAllocType == .Debug) || (hasLeakCheck))
 				macroList.Add("BF_DEBUG_ALLOC");

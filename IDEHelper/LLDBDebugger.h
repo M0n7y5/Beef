@@ -287,6 +287,7 @@ protected:
 	void ClearStepSpecific();
 	bool ContinueStep(lldb::SBThread& thread);
 	lldb::SBThread SelectStoppedThread();
+	void CheckNonDebuggerBreak(lldb::SBThread& thread);
 	bool HotFindThreadLocalOffset(const char* qualifiedName, uint64& outOffset);
 	bool IsClosingBraceLine(lldb::SBLineEntry& lineEntry);
 	bool HostCheckBreakpointCondition(LLDBBreakpoint* bp);
