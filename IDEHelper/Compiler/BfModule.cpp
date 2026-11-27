@@ -13205,6 +13205,7 @@ void BfModule::GetCustomAttributes(BfCustomAttributes* customAttributes, BfAttri
 {
 	bool allowNonConstArgs = (flags & BfGetCustomAttributesFlags_AllowNonConstArgs) != 0;
 	bool keepConstsInModule = (flags & BfGetCustomAttributesFlags_KeepConstsInModule) != 0;
+	bool returnValueOnly = (flags & BfGetCustomAttributesFlags_ReturnValueOnly) != 0;
 
 	if (!mCompiler->mHasRequiredTypes)
 		return;
@@ -13221,6 +13222,7 @@ void BfModule::GetCustomAttributes(BfCustomAttributes* customAttributes, BfAttri
 
 	BfTypeInstance* baseAttrTypeInst = mContext->mUnreifiedModule->ResolveTypeDef(mCompiler->mAttributeTypeDef)->ToTypeInstance();
 	BfAttributeTargets targetOverride = (BfAttributeTargets)0;
+	BfCustomAttributes* returnCustomAttributes = NULL;
 
 	BfTypeDef* activeTypeDef = GetActiveTypeDef();
 	BfAutoComplete* autoComplete = NULL;
@@ -13270,6 +13272,9 @@ void BfModule::GetCustomAttributes(BfCustomAttributes* customAttributes, BfAttri
 
 		if (attributesDirective->mAttrOpenToken != NULL)
 			targetOverride = (BfAttributeTargets)0;
+
+		if ((returnValueOnly) && (attributesDirective->mAttributeTargetSpecifier == NULL) && (targetOverride == (BfAttributeTargets)0))
+			continue;
 
 		if (attributesDirective->mAttributeTypeRef == NULL)
 		{
@@ -13699,6 +13704,7 @@ void BfModule::GetCustomAttributes(BfCustomAttributes* customAttributes, BfAttri
 					if (methodInfoEx->mMethodCustomAttributes->mReturnCustomAttributes == NULL)
 						methodInfoEx->mMethodCustomAttributes->mReturnCustomAttributes = new BfCustomAttributes();
 					methodInfoEx->mMethodCustomAttributes->mReturnCustomAttributes->mAttributes.push_back(customAttribute);
+					returnCustomAttributes = methodInfoEx->mMethodCustomAttributes->mReturnCustomAttributes;
 				}
 			}
 
@@ -13727,6 +13733,8 @@ void BfModule::GetCustomAttributes(BfCustomAttributes* customAttributes, BfAttri
 	}
 
 	ValidateCustomAttributes(customAttributes, attrTarget);
+	if (returnCustomAttributes != NULL)
+		ValidateCustomAttributes(returnCustomAttributes, BfAttributeTargets_ReturnValue);
 }
 
 BfCustomAttributes* BfModule::GetCustomAttributes(BfAttributeDirective* attributesDirective, BfAttributeTargets attrType, BfGetCustomAttributesFlags flags, BfCaptureInfo* captureInfo)
@@ -25144,6 +25152,7 @@ void BfModule::GetMethodCustomAttributes(BfMethodInstance* methodInstance)
 			// Take over previously-generated custom attributes
 			methodInstance->mMethodInfoEx->mMethodCustomAttributes->mCustomAttributes = methodInstance->mMethodInstanceGroup->mDefaultCustomAttributes;
 			methodInstance->mMethodInstanceGroup->mDefaultCustomAttributes = NULL;
+			delete GetCustomAttributes(attributeDirective, attrTarget, BfGetCustomAttributesFlags_ReturnValueOnly);
 		}
 		else
 			methodInstance->mMethodInfoEx->mMethodCustomAttributes->mCustomAttributes = GetCustomAttributes(attributeDirective, attrTarget);

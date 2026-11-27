@@ -1503,7 +1503,8 @@ enum BfGetCustomAttributesFlags
 {
 	BfGetCustomAttributesFlags_None = 0,
 	BfGetCustomAttributesFlags_AllowNonConstArgs = 1,
-	BfGetCustomAttributesFlags_KeepConstsInModule = 2
+	BfGetCustomAttributesFlags_KeepConstsInModule = 2,
+	BfGetCustomAttributesFlags_ReturnValueOnly = 4
 };
 
 class BfVDataExtEntry
