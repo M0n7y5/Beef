@@ -429,6 +429,7 @@ namespace System
 		static extern void Comptime_EmitMethodExit(int64 methodHandle, StringView text);
 		static extern void Comptime_EmitMixin(StringView text);
 		static extern void Comptime_Output(StringView text);
+		static extern void Comptime_Report(int32 typeId, int64 methodHandle, int32 fieldIdx, bool isWarning, StringView text);
 		static extern String Comptime_GetStringById(int32 id);
 		static extern int32 Comptime_GetIdByString(StringView str);
 
@@ -468,6 +469,42 @@ namespace System
 		public static void EmitAddInterface(Type owner, Type iface)
 		{
 			Comptime_EmitAddInterface((.)owner.TypeId, (.)iface.TypeId);
+		}
+
+		[Comptime(OnlyFromComptime=true)]
+		public static void Error(Type type, StringView text)
+		{
+			Comptime_Report((.)type.TypeId, 0, -1, false, text);
+		}
+
+		[Comptime(OnlyFromComptime=true)]
+		public static void Error(MethodInfo method, StringView text)
+		{
+			Comptime_Report(0, method.[Friend]mData.mComptimeMethodInstance, -1, false, text);
+		}
+
+		[Comptime(OnlyFromComptime=true)]
+		public static void Error(FieldInfo field, StringView text)
+		{
+			Comptime_Report((.)field.DeclaringType.TypeId, 0, field.FieldIdx, false, text);
+		}
+
+		[Comptime(OnlyFromComptime=true)]
+		public static void Warn(Type type, StringView text)
+		{
+			Comptime_Report((.)type.TypeId, 0, -1, true, text);
+		}
+
+		[Comptime(OnlyFromComptime=true)]
+		public static void Warn(MethodInfo method, StringView text)
+		{
+			Comptime_Report(0, method.[Friend]mData.mComptimeMethodInstance, -1, true, text);
+		}
+
+		[Comptime(OnlyFromComptime=true)]
+		public static void Warn(FieldInfo field, StringView text)
+		{
+			Comptime_Report((.)field.DeclaringType.TypeId, 0, field.FieldIdx, true, text);
 		}
 
 		[Comptime(OnlyFromComptime=true)]

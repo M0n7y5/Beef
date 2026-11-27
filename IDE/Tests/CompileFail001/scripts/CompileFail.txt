@@ -33,6 +33,11 @@ WaitForResolve()
 SleepTicks(20)
 AssertFileErrors()
 
+ShowFile("src/ComptimeReport.bf")
+WaitForResolve()
+SleepTicks(20)
+AssertFileErrors()
+
 ShowFile("src/Properties.bf")
 WaitForResolve()
 SleepTicks(20)

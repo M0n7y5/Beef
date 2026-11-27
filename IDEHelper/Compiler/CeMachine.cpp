@@ -7320,6 +7320,52 @@ bool CeContext::Execute(CeFunction* startFunction, uint8* startStackPtr, uint8* 
 				}
 				mCurEmitContext->mInterfaces.Add(ifaceTypeId);
 			}
+			else if (checkFunction->mFunctionKind == CeFunctionKind_Report)
+			{
+				int32 typeId = *(int32*)((uint8*)stackPtr);
+				int64 methodHandle = *(int64*)((uint8*)stackPtr + sizeof(int32));
+				int32 fieldIdx = *(int32*)((uint8*)stackPtr + sizeof(int32) + sizeof(int64));
+				bool isWarning = *(bool*)((uint8*)stackPtr + sizeof(int32) + sizeof(int64) + sizeof(int32));
+				addr_ce strViewPtr = *(addr_ce*)((uint8*)stackPtr + sizeof(int32) + sizeof(int64) + sizeof(int32) + sizeof(bool));
+
+				BfAstNode* refNode = NULL;
+				if (methodHandle != 0)
+				{
+					auto methodInstance = mCeMachine->GetMethodInstance(methodHandle);
+					if (methodInstance != NULL)
+						refNode = methodInstance->mMethodDef->GetRefNode();
+				}
+				else if (auto typeInst = GetBfType(typeId)->ToTypeInstance())
+				{
+					if (fieldIdx == -1)
+						refNode = typeInst->mTypeDef->GetRefNode();
+					else if ((fieldIdx >= 0) && (fieldIdx < typeInst->mFieldInstances.mSize) && (typeInst->mFieldInstances[fieldIdx].GetFieldDef() != NULL))
+						refNode = typeInst->mFieldInstances[fieldIdx].GetFieldDef()->GetRefNode();
+				}
+				if (refNode == NULL)
+				{
+					_Fail("Invalid declaration");
+					return false;
+				}
+
+				String text;
+				if (!GetStringFromStringView(strViewPtr, text))
+				{
+					_Fail("Invalid StringView");
+					return false;
+				}
+
+				SetAndRestoreValue<BfTypeInstance*> prevTypeInst(mCurModule->mCurTypeInstance, mCallerTypeInstance);
+				bool isPersistent = (mCurEvalFlags & CeEvalFlags_PersistantError) != 0;
+				if (isWarning)
+					mCurModule->Warn(0, text, refNode, isPersistent, true);
+				else
+				{
+					if (mCurEmitContext != NULL)
+						mCurEmitContext->mFailed = true;
+					mCurModule->Fail(text, refNode, isPersistent, ((mCurEvalFlags & CeEvalFlags_DeferIfNotOnlyError) != 0) && (!mCurModule->mHadBuildError));
+				}
+			}
 			else if (checkFunction->mFunctionKind == CeFunctionKind_EmitMethodEntry)
 			{
 				int64 methodHandle = *(int64*)((uint8*)stackPtr);
@@ -10892,6 +10938,10 @@ void CeMachine::CheckFunctionKind(CeFunction* ceFunction)
 				else if (methodDef->mName == "Comptime_GetIdByString")
 				{
 					ceFunction->mFunctionKind = CeFunctionKind_GetIdByString;
+				}
+				else if (methodDef->mName == "Comptime_Report")
+				{
+					ceFunction->mFunctionKind = CeFunctionKind_Report;
 				}
 				else if (methodDef->mName == "Comptime_Output")
 				{
