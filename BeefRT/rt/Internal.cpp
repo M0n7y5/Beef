@@ -286,6 +286,15 @@ static void Internal_FatalError(const char* error)
 		BfpSystem_FatalError(error, "BEEF FATAL ERROR");
 }
 
+// Without a debugger the break after a failed check ends the process before the error is reported
+void ReportCheckToTestManager(const char* error)
+{
+	if ((gClientPipeErrorFunc == NULL) || (::IsDebuggerPresent()))
+		return;
+	const char* end = strchr(error, '\x1');
+	gClientPipeErrorFunc((end != NULL) ? Beefy::StringView(error, (int)(end - error)) : Beefy::StringView(error), 0);
+}
+
 extern "C" BFRT_EXPORT int BF_CALLTYPE ftoa(float val, char* str)
 {
 	return sprintf(str, "%1.9f", val);
@@ -590,6 +599,7 @@ void Internal::BfDelegateTargetCheck(void* target)
 {
 	if (target != NULL)
 	{
+		ReportCheckToTestManager("Attempting pass non-static method reference to extern method");
 		SETUP_ERROR("Attempting pass non-static method reference to extern method", 2);
 		BF_DEBUG_BREAK();
 		gBfRtCallbacks.DebugMessageData_Fatal();
@@ -609,6 +619,7 @@ void* Internal::LoadSharedLibrary(char* libName)
 		}
 
 		Beefy::String errorStr = StrFormat("Failed to load shared library: %s", libName);
+		ReportCheckToTestManager(errorStr.c_str());
 		SETUP_ERROR(errorStr.c_str(), 1);
 		BF_DEBUG_BREAK();
 		gBfRtCallbacks.DebugMessageData_Fatal();
@@ -641,6 +652,7 @@ void* Internal::GetSharedProcAddress(void* libHandle, char* procName)
 		}
 
 		Beefy::String errorStr = StrFormat("Failed to load shared procedure '%s' from '%s'", procName, libFileName);
+		ReportCheckToTestManager(errorStr.c_str());
 		SETUP_ERROR(errorStr.c_str(), 1);
 		BF_DEBUG_BREAK();
 		gBfRtCallbacks.DebugMessageData_Fatal();
@@ -960,6 +972,7 @@ void Internal::ObjectDynCheckFailed(bf::System::Object* object, int typeId)
 {
 	if (object == NULL)
 	{
+		ReportCheckToTestManager("Attempting unboxing on null object");
 		SETUP_ERROR("Attempting unboxing on null object", 1);
 		BF_DEBUG_BREAK();
 		gBfRtCallbacks.DebugMessageData_Fatal();
@@ -969,6 +982,7 @@ void Internal::ObjectDynCheckFailed(bf::System::Object* object, int typeId)
 	Beefy::String errorStr = "Attempting invalid cast on object";
 
 	errorStr += StrFormat("\x1LEAK\t0x%@\n   (%s)0x%@\n", object, "System.Object", object);
+	ReportCheckToTestManager(errorStr.c_str());
 	SETUP_ERROR(errorStr.c_str(), 2);
 	BF_DEBUG_BREAK();
 	gBfRtCallbacks.DebugMessageData_Fatal();

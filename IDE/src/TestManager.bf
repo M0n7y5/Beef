@@ -561,12 +561,17 @@ namespace IDE
 				else if (testInstance.mCurTestIdx < testInstance.mTestEntries.Count)
 				{
 					var testEntry = testInstance.mTestEntries[testInstance.mCurTestIdx];
-					if (testEntry.mShouldFail)
+					if ((testEntry.mShouldFail) && (testEntry.mFailed))
 					{
-						// Success
-						testEntry.mFailed = true;
 						expectedFailure = true;
 						QueueOutputLine("Test expectedly failed: {0}", testEntry.mName);
+					}
+					else if (testEntry.mShouldFail)
+					{
+						curProjectInfo.mFailedCount++;
+						testEntry.mFailed = true;
+						testFailCount++;
+						QueueOutputLine("ERROR: Test crashed instead of failing: '{0}' defined at line {2}:{3} in {1}", testEntry.mName, testEntry.mFilePath, testEntry.mLine + 1, testEntry.mColumn + 1);
 					}
 					else
 					{
