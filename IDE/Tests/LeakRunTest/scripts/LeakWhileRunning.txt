@@ -1,0 +1,18 @@
+SetExpectError("1 object memory leak detected")
+RunWithCompiling()
+ExpectError()
+
+if (platform != "Win32") SelectThread("")
+if (platform != "Win32") SelectCallStackWithStr("LeakRunTest.Program.Main")
+if (platform != "Win32") AssertEvalEquals("LeakRunTest.Program.sLoops < 200", "true")
+if (platform != "Win32") AddWatch("(System.Object)(void*)LeakRunTest.Program.sLeakedAddr")
+if (platform != "Win32") SelectWatch("(System.Object)(void*)LeakRunTest.Program.sLeakedAddr")
+if (platform != "Win32") AssertSelectedWatchContains("{ 42 }")
+if (platform != "Win32") OpenSelectedWatches()
+if (platform != "Win32") SelectWatch("[AllocStackTrace]")
+if (platform != "Win32") AssertSelectedWatchContains("LeakRunTest.Program.Leak()")
+
+SetExpectError("1 object memory leak detected")
+Continue()
+ExpectError()
+StopRunning()

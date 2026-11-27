@@ -3395,26 +3395,52 @@ using namespace bf::System;
 
 void GC::Run()
 {
-#ifdef BF_GC_INCREMENTAL
-    gBFGC.Run();
-#endif
 }
 
 void GC::Init()
 {
+	BfGCInit();
 }
 
 void GC::ReportTLSMember(intptr tlsIndex, void* ptr, void* markFunc)
 {
+	BfGCReportTLSMember(ptr, markFunc);
+}
+
+void GC::StopCollecting()
+{
+	BfGCStopCollecting();
+}
+
+void GC::Disable()
+{
+	BfGCStopCollecting();
 }
 
 void GC::Shutdown()
 {
+	BfGCStopCollecting();
 	BfRawShutdown();
 }
 
 void GC::Collect(bool async)
 {
+	BfGCCollect(async);
+}
+
+void GC::AddStackMarkableObject(Object* obj)
+{
+	BfGCAddStackMarkableObject(obj);
+}
+
+void GC::RemoveStackMarkableObject(Object* obj)
+{
+	BfGCRemoveStackMarkableObject(obj);
+}
+
+void GC::AddPendingThread(void* internalThreadInfo)
+{
+	BfGCAddPendingThread(internalThreadInfo);
 }
 
 void GC::SetReleaseThreshold(uint64 allowedWasteBytes, float allowedWastePercentage, float maxPressure)
@@ -3435,23 +3461,40 @@ void GC::Report()
 {
 }
 
-/*void GC::Mark(Object* obj)
+void GC::Mark(Object* obj)
 {
-}*/
+	BfGCMarkObject(obj);
+}
 
 void GC::Mark(void* ptr, intptr size)
 {
+	BfGCMarkRange(ptr, size);
 }
 
 void GC::DebugDumpLeaks()
 {
+	BfGCCollect(false);
 }
 
 void GC::SetAutoCollectPeriod(intptr periodMS)
 {
+	BfGCSetAutoCollectPeriod(periodMS);
 }
 
 void GC::SetCollectFreeThreshold(intptr freeBytes)
+{
+	BfGCSetCollectFreeThreshold(freeBytes);
+}
+
+void GC::SetMaxPausePercentage(intptr maxPausePercentage)
+{
+}
+
+void GC::SetMaxRawDeferredObjectFreePercentage(intptr maxPercentage)
+{
+}
+
+void GC::ExcludeThreadId(intptr threadId)
 {
 }
 

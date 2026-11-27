@@ -2,6 +2,8 @@
 #include "BFPlatform.h"
 #include <stdlib.h>
 #include <limits.h>
+#include <semaphore.h>
+#include <ucontext.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
 #ifdef BF_PLATFORM_LINUX
@@ -59,6 +61,26 @@
 //using __cxxabiv1::__cxa_demangle;
 
 USING_NS_BF;
+
+static int64 MonotonicMS()
+{
+	timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (int64)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+static int PollRestarting(pollfd* fds, nfds_t count, int timeoutMS)
+{
+	int64 deadline = MonotonicMS() + timeoutMS;
+	while (true)
+	{
+		int result = poll(fds, count, timeoutMS);
+		if ((result != -1) || (errno != EINTR))
+			return result;
+		if (timeoutMS > 0)
+			timeoutMS = (int)BF_MAX(deadline - MonotonicMS(), (int64)0);
+	}
+}
 
 struct BfpPipeInfo
 {
@@ -1406,7 +1428,7 @@ BFP_EXPORT bool BFP_CALLTYPE BfpProcess_WaitFor(BfpProcess* process, int waitMS,
 	defer( close(processFd) );
 
 	pollfd pfd = { processFd, POLLIN, 0};
-	if (poll(&pfd, 1, waitMS) == -1)
+	if (PollRestarting(&pfd, 1, waitMS) == -1)
 	{
 		OUTRESULT(BfpProcessResult_UnknownError);
 		return false;
@@ -1940,7 +1962,7 @@ bool BfpSpawn_WaitFor(BfpSpawn* spawn, int waitMS, int* outExitCode, BfpSpawnRes
 		.revents =  0
 	};
 
-	if (poll(&pollFd, 1, (int)waitMS) == -1)
+	if (PollRestarting(&pollFd, 1, (int)waitMS) == -1)
 	{
 		OUTRESULT(BfpSpawnResult_UnknownError);
 		return false;
@@ -2346,6 +2368,270 @@ BFP_EXPORT void BFP_CALLTYPE BfpThread_SetPriority(BfpThread* thread, BfpThreadP
     OUTRESULT(BfpThreadResult_Ok);
 }
 
+#if defined(BF_PLATFORM_LINUX) && (defined(__x86_64__) || defined(__aarch64__))
+
+enum BfpSuspendState
+{
+    BfpSuspendState_Idle,
+    BfpSuspendState_Requested,
+    BfpSuspendState_Parked,
+    BfpSuspendState_Resuming,
+    BfpSuspendState_Abandoned
+};
+
+struct BfpSuspendRecord
+{
+    pthread_t mPThread;
+    volatile int mState;
+    sem_t mAck;
+    intptr mStackPtr;
+    intptr mRegs[64];
+    int mRegCount;
+};
+
+// A fixed table, because claiming a record must not malloc while other threads are already suspended
+static BfpSuspendRecord gSuspendRecords[1024];
+static volatile int gSuspendRecordCount = 0;
+static pthread_mutex_t gSuspendMutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_once_t gSuspendOnce = PTHREAD_ONCE_INIT;
+
+static int GetSuspendSignal()
+{
+    return SIGRTMIN + 6;
+}
+
+static int GetResumeSignal()
+{
+    return SIGRTMIN + 7;
+}
+
+static pthread_t GetThreadPThread(BfpThread* thread)
+{
+    if (thread == NULL)
+        return pthread_self();
+    return (((intptr)thread & 1) != 0) ? (pthread_t)((intptr)thread & ~3) : thread->mPThread;
+}
+
+static BfpSuspendRecord* FindSuspendRecord(pthread_t pt)
+{
+    int count = __atomic_load_n(&gSuspendRecordCount, __ATOMIC_ACQUIRE);
+    for (int recordIdx = 0; recordIdx < count; recordIdx++)
+    {
+        if (pthread_equal(gSuspendRecords[recordIdx].mPThread, pt))
+            return &gSuspendRecords[recordIdx];
+    }
+    return NULL;
+}
+
+static void CaptureRegisters(ucontext_t* context, BfpSuspendRecord* record)
+{
+    int regCount = 0;
+#if defined(__x86_64__)
+    for (int regIdx = 0; regIdx < NGREG; regIdx++)
+        record->mRegs[regCount++] = (intptr)context->uc_mcontext.gregs[regIdx];
+    if (context->uc_mcontext.fpregs != NULL)
+    {
+        for (int regIdx = 0; regIdx < 16; regIdx++)
+        {
+            memcpy(&record->mRegs[regCount], &context->uc_mcontext.fpregs->_xmm[regIdx], sizeof(intptr) * 2);
+            regCount += 2;
+        }
+    }
+    // The SysV red zone below RSP can hold live locals
+    record->mStackPtr = (intptr)context->uc_mcontext.gregs[REG_RSP] - 128;
+#else
+    for (int regIdx = 0; regIdx < 31; regIdx++)
+        record->mRegs[regCount++] = (intptr)context->uc_mcontext.regs[regIdx];
+    record->mStackPtr = (intptr)context->uc_mcontext.sp;
+#endif
+    record->mRegCount = regCount;
+}
+
+static void SuspendSignalHandler(int sig, siginfo_t* info, void* context)
+{
+    int savedErrno = errno;
+    BfpSuspendRecord* record = FindSuspendRecord(pthread_self());
+    if (record != NULL)
+    {
+        int expected = BfpSuspendState_Requested;
+        if (__atomic_compare_exchange_n(&record->mState, &expected, BfpSuspendState_Parked, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+        {
+            CaptureRegisters((ucontext_t*)context, record);
+            sem_post(&record->mAck);
+
+            sigset_t waitMask;
+            sigfillset(&waitMask);
+            sigdelset(&waitMask, GetResumeSignal());
+            while (__atomic_load_n(&record->mState, __ATOMIC_ACQUIRE) == BfpSuspendState_Parked)
+                sigsuspend(&waitMask);
+
+            __atomic_store_n(&record->mState, BfpSuspendState_Idle, __ATOMIC_RELEASE);
+            sem_post(&record->mAck);
+        }
+        else if (expected == BfpSuspendState_Abandoned)
+        {
+            __atomic_store_n(&record->mState, BfpSuspendState_Idle, __ATOMIC_RELEASE);
+        }
+    }
+    errno = savedErrno;
+}
+
+static void ResumeSignalHandler(int sig, siginfo_t* info, void* context)
+{
+}
+
+static void InitSuspendSignals()
+{
+    struct sigaction action;
+    memset(&action, 0, sizeof(action));
+    action.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigfillset(&action.sa_mask);
+    sigdelset(&action.sa_mask, SIGSEGV);
+    sigdelset(&action.sa_mask, SIGBUS);
+    sigdelset(&action.sa_mask, SIGILL);
+    sigdelset(&action.sa_mask, SIGFPE);
+    action.sa_sigaction = SuspendSignalHandler;
+    sigaction(GetSuspendSignal(), &action, NULL);
+
+    memset(&action, 0, sizeof(action));
+    action.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&action.sa_mask);
+    action.sa_sigaction = ResumeSignalHandler;
+    sigaction(GetResumeSignal(), &action, NULL);
+}
+
+static bool WaitForSuspendAck(BfpSuspendRecord* record, int timeoutMS)
+{
+    timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += timeoutMS / 1000;
+    deadline.tv_nsec += (timeoutMS % 1000) * 1000000;
+    if (deadline.tv_nsec >= 1000000000)
+    {
+        deadline.tv_sec++;
+        deadline.tv_nsec -= 1000000000;
+    }
+    while (true)
+    {
+        if (sem_timedwait(&record->mAck, &deadline) == 0)
+            return true;
+        if (errno != EINTR)
+            return false;
+    }
+}
+
+BFP_EXPORT void BFP_CALLTYPE BfpThread_Suspend(BfpThread* thread, BfpThreadResult* outResult)
+{
+    pthread_once(&gSuspendOnce, InitSuspendSignals);
+    pthread_t pt = GetThreadPThread(thread);
+    if (pthread_equal(pt, pthread_self()))
+    {
+        OUTRESULT(BfpThreadResult_UnknownError);
+        return;
+    }
+
+    pthread_mutex_lock(&gSuspendMutex);
+    BfpSuspendRecord* record = FindSuspendRecord(pt);
+    if (record == NULL)
+    {
+        int count = gSuspendRecordCount;
+        if (count >= (int)(sizeof(gSuspendRecords) / sizeof(gSuspendRecords[0])))
+        {
+            pthread_mutex_unlock(&gSuspendMutex);
+            OUTRESULT(BfpThreadResult_UnknownError);
+            return;
+        }
+        record = &gSuspendRecords[count];
+        record->mPThread = pt;
+        record->mState = BfpSuspendState_Idle;
+        sem_init(&record->mAck, 0, 0);
+        __atomic_store_n(&gSuspendRecordCount, count + 1, __ATOMIC_RELEASE);
+    }
+
+    int expected = BfpSuspendState_Idle;
+    if (!__atomic_compare_exchange_n(&record->mState, &expected, BfpSuspendState_Requested, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+    {
+        pthread_mutex_unlock(&gSuspendMutex);
+        OUTRESULT(BfpThreadResult_UnknownError);
+        return;
+    }
+
+    bool suspended = false;
+    if (pthread_kill(pt, GetSuspendSignal()) == 0)
+    {
+        suspended = WaitForSuspendAck(record, 2000);
+        if (!suspended)
+        {
+            expected = BfpSuspendState_Requested;
+            if (!__atomic_compare_exchange_n(&record->mState, &expected, BfpSuspendState_Abandoned, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            {
+                sem_wait(&record->mAck);
+                suspended = true;
+            }
+        }
+    }
+    else
+        __atomic_store_n(&record->mState, BfpSuspendState_Idle, __ATOMIC_RELEASE);
+    pthread_mutex_unlock(&gSuspendMutex);
+    OUTRESULT(suspended ? BfpThreadResult_Ok : BfpThreadResult_UnknownError);
+}
+
+BFP_EXPORT void BFP_CALLTYPE BfpThread_Resume(BfpThread* thread, BfpThreadResult* outResult)
+{
+    pthread_t pt = GetThreadPThread(thread);
+    pthread_mutex_lock(&gSuspendMutex);
+    BfpSuspendRecord* record = FindSuspendRecord(pt);
+    int expected = BfpSuspendState_Parked;
+    if ((record == NULL) || (!__atomic_compare_exchange_n(&record->mState, &expected, BfpSuspendState_Resuming, false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)))
+    {
+        pthread_mutex_unlock(&gSuspendMutex);
+        OUTRESULT(BfpThreadResult_UnknownError);
+        return;
+    }
+    pthread_kill(pt, GetResumeSignal());
+    while (sem_wait(&record->mAck) != 0)
+    {
+    }
+    pthread_mutex_unlock(&gSuspendMutex);
+    OUTRESULT(BfpThreadResult_Ok);
+}
+
+BFP_EXPORT void BFP_CALLTYPE BfpThread_GetIntRegisters(BfpThread* thread, intptr* outStackPtr, intptr* outIntRegs, int* inOutIntRegCount, BfpThreadResult* outResult)
+{
+    pthread_t pt = GetThreadPThread(thread);
+    BfpSuspendRecord currentRecord;
+    BfpSuspendRecord* record = NULL;
+    if (pthread_equal(pt, pthread_self()))
+    {
+        ucontext_t context;
+        getcontext(&context);
+        CaptureRegisters(&context, &currentRecord);
+        record = &currentRecord;
+    }
+    else
+    {
+        record = FindSuspendRecord(pt);
+        if ((record == NULL) || (__atomic_load_n(&record->mState, __ATOMIC_ACQUIRE) != BfpSuspendState_Parked))
+        {
+            OUTRESULT(BfpThreadResult_UnknownError);
+            return;
+        }
+    }
+
+    if (*inOutIntRegCount < record->mRegCount)
+    {
+        *inOutIntRegCount = record->mRegCount;
+        OUTRESULT(BfpThreadResult_InsufficientBuffer);
+        return;
+    }
+    *outStackPtr = record->mStackPtr;
+    memcpy(outIntRegs, record->mRegs, record->mRegCount * sizeof(intptr));
+    *inOutIntRegCount = record->mRegCount;
+    OUTRESULT(BfpThreadResult_Ok);
+}
+
+#else
+
 BFP_EXPORT void BFP_CALLTYPE BfpThread_Suspend(BfpThread* thread, BfpThreadResult* outResult)
 {
     NOT_IMPL;
@@ -2361,9 +2647,14 @@ BFP_EXPORT void BFP_CALLTYPE BfpThread_GetIntRegisters(BfpThread* thread, intptr
     NOT_IMPL;
 }
 
+#endif
+
 BFP_EXPORT void BFP_CALLTYPE BfpThread_Sleep(int sleepMS)
 {
-    usleep(sleepMS * 1000);
+    timespec remaining = { sleepMS / 1000, (sleepMS % 1000) * 1000000L };
+    while ((nanosleep(&remaining, &remaining) != 0) && (errno == EINTR))
+    {
+    }
 }
 
 BFP_EXPORT bool BFP_CALLTYPE BfpThread_Yield()
@@ -3046,19 +3337,8 @@ BFP_EXPORT intptr BFP_CALLTYPE BfpFile_Read(BfpFile* file, void* buffer, intptr 
 		if (!file->mAllowTimeout)
 			timeoutMS = -1;
 
-		timeval timeout;
-		timeout.tv_sec = 0;
-		timeout.tv_usec = timeoutMS * 1000;
-
-		fd_set readFDSet;
-		FD_ZERO(&readFDSet);
-		FD_SET(file->mHandle, &readFDSet);
-
-		fd_set errorFDSet;
-		FD_ZERO(&errorFDSet);
-		FD_SET(file->mHandle, &errorFDSet);
-
-		if (select(file->mHandle + 1, &readFDSet, NULL, &errorFDSet, (timeoutMS == -1) ? NULL : &timeout) < 0)
+		pollfd pollFd = { file->mHandle, POLLIN, 0 };
+		if (PollRestarting(&pollFd, 1, timeoutMS) < 0)
 		{
 			OUTRESULT(BfpFileResult_Timeout);
 			return 0;

@@ -669,7 +669,10 @@ abstract class CommonDialog
 		while(!mDone)
 		{
 		    Linux.DBusMsg* m = ?;
-			TryC!(Linux.SdBusWait(mBus, uint64.MaxValue));
+			int32 waitResult = Linux.SdBusWait(mBus, uint64.MaxValue);
+			if (waitResult == -4)
+				continue;
+			TryC!(waitResult);
 			TryC!(Linux.SdBusProcess(mBus, &m));
 		    Linux.SdBusMessageUnref(m);
 		}

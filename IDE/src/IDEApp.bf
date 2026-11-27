@@ -9291,16 +9291,12 @@ namespace IDE
 			if (workspaceOptions.mReflectKind == .Minimal)
 				macroList.Add("BF_REFLECT_MINIMAL");
 
-			// Only supported on Windows at the moment
 			bool hasLeakCheck = false;
-			if (workspaceOptions.LeakCheckingEnabled)
+			if (workspaceOptions.LeakCheckingEnabled(platform))
 			{
 				hasLeakCheck = true;
 				macroList.Add("BF_ENABLE_REALTIME_LEAK_CHECK");
 			}
-			else if ((platform == .Linux) && (workspaceOptions.mEnableRealtimeLeakCheck) && (workspaceOptions.mEnableObjectDebugFlags) &&
-				(workspaceOptions.mAllocType == .Debug) && (workspaceOptions.mRuntimeKind != .Disabled))
-				macroList.Add("BF_ENABLE_SHUTDOWN_LEAK_CHECK");
 
 			if ((workspaceOptions.mAllocType == .Debug) || (hasLeakCheck))
 				macroList.Add("BF_DEBUG_ALLOC");

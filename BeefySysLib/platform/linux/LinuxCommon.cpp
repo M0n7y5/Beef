@@ -10,6 +10,8 @@
 
 #include <sys/inotify.h>
 
+extern "C" void BfGCAttachThread() __attribute__((weak));
+
 struct BfpFileWatcher
 {
     String mPath;
@@ -51,11 +53,15 @@ private:
             int length = read(mInotifyHandle, &mEventBuffer, NOTIFY_BUFFER_SIZE);
             if (mIsClosing) 
                 break;
+            if ((length < 0) && (errno == EINTR))
+                continue;
             if (length < 0)
             {
                 BFP_ERRPRINTF("Failed to read inotify event data!\n");
                 return;
             }
+            if (BfGCAttachThread != NULL)
+                BfGCAttachThread();
             int pos = 0;
             while(pos < length)
             {
