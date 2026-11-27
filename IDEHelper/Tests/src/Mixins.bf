@@ -171,6 +171,22 @@ namespace Tests
 			return total;
 		}
 
+		struct PackVal { public int64 mX; }
+
+		static mixin SumPair(params (int, int) args) { args.0 + args.1 }
+		static mixin PackTuple<T>(params T args) where T : Tuple { args }
+		static mixin SumDelegate(params delegate void(int a, int b) args) { a + b }
+
+		[Test]
+		public static void TestParamsPacks()
+		{
+			Test.Assert(SumPair!(1, 2) == 3);
+			let tup = PackTuple!(PackVal() { mX = 11 }, 3);
+			Test.Assert(tup.0.mX == 11);
+			Test.Assert(tup.1 == 3);
+			Test.Assert(SumDelegate!(4, 5) == 9);
+		}
+
 		[Test]
 		public static void TestBasics()
 		{
