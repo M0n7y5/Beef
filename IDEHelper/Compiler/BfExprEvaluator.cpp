@@ -12667,8 +12667,10 @@ bool BfExprEvaluator::LookupTypeProp(BfTypeOfExpression* typeOfExpr, BfIdentifie
 	}
 	else
 	{
-		// We need full data
-		mModule->PopulateType(type, BfPopulateType_Data);
+		if ((memberName == "Size") || (memberName == "Align") || (memberName == "Stride") ||
+			(memberName == "InstanceSize") || (memberName == "InstanceAlign") || (memberName == "InstanceStride") ||
+			(memberName == "UnderlyingType") || (memberName == "BitSize") || (memberName == "MinValue") || (memberName == "MaxValue"))
+			mModule->PopulateType(type, BfPopulateType_Data);
 
 		if (memberName == "Size")
 			_Int32Result(type->mSize);
